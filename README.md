@@ -4,12 +4,6 @@
 **Course:** CSC4351 Capstone 1  
 **Fall 2025**
 
-## Team Members
-- Edwin Lin
-- Saiesh Irukulla
-- Tiffani Singleton
-- Yin Wang
-
 ## Overview
 
 The Capstone Project Management System is a web-based application designed to streamline the capstone project workflow at Georgia State University. It provides a centralized platform for:
@@ -20,14 +14,14 @@ The Capstone Project Management System is a web-based application designed to st
 ## Features
 
 ### Core Functionality
-- ✅ User authentication (Student/Faculty roles)
-- ✅ Project browsing and search
-- ✅ Team formation (First Come First Serve)
-- ✅ Project workspace with messaging
-- ✅ Task management and assignment
-- ✅ Milestone tracking
-- ✅ Student profile creation with skills/interests
-- ✅ Real-time collaboration tools
+-  User authentication (Student/Faculty roles)
+-  Project browsing and search
+-  Team formation (First Come First Serve)
+-  Project workspace with messaging
+-  Task management and assignment
+-  Milestone tracking
+-  Student profile creation with skills/interests
+-  Real-time collaboration tools
 
 ### User Roles
 
