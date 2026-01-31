@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Capstone Project Management System</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Login Page -->
+        <div id="login-page" class="page active">
+            <div class="container">
+                <div class="auth-card">
+                    <div class="logo">
+                        <h1>CopiumCoders</h1>
+                        <p>Capstone Project Management System</p>
+                    </div>
+                    
+                    <form id="login-form" class="auth-form">
+                        <h2>Login</h2>
+                        <div class="form-group">
+                            <label for="login-username">Username</label>
+                            <input type="text" id="login-username" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="login-password">Password</label>
+                            <input type="password" id="login-password" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Login</button>
+                        <div class="auth-links">
+                            <a href="#" id="show-register">Don't have an account? Register</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Register Page -->
+        <div id="register-page" class="page">
+            <div class="container">
+                <div class="auth-card">
+                    <div class="logo">
+                        <h1>CopiumCoders</h1>
+                        <p>Create Your Account</p>
+                    </div>
+                    
+                    <form id="register-form" class="auth-form">
+                        <h2>Register</h2>
+                        
+                        <div class="form-group">
+                            <label for="role">I am a:</label>
+                            <select id="role" required>
+                                <option value="">Select Role</option>
+                                <option value="student">Student</option>
+                                <option value="faculty">Faculty</option>
+                            </select>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="first-name">First Name</label>
+                                <input type="text" id="first-name" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="last-name">Last Name</label>
+                                <input type="text" id="last-name" required>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="username">Username</label>
+                            <input type="text" id="username" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="email">GSU Email</label>
+                            <input type="email" id="email" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="password">Password</label>
+                            <input type="password" id="password" required>
+                        </div>
+
+                        <!-- Student-specific fields -->
+                        <div id="student-fields" style="display: none;">
+                            <div class="form-group">
+                                <label for="crn">CRN</label>
+                                <input type="text" id="crn">
+                            </div>
+                        </div>
+
+                        <!-- Faculty-specific fields -->
+                        <div id="faculty-fields" style="display: none;">
+                            <div class="form-group">
+                                <label for="title">Title (e.g., Professor, Dr.)</label>
+                                <input type="text" id="title">
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary">Register</button>
+                        <div class="auth-links">
+                            <a href="#" id="show-login">Already have an account? Login</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Dashboard Page -->
+        <div id="dashboard-page" class="page">
+            <nav class="navbar">
+                <div class="nav-brand">
+                    <h2>Capstone PMS</h2>
+                </div>
+                <div class="nav-menu">
+                    <a href="#" class="nav-link active" data-view="overview">Dashboard</a>
+                    <a href="#" class="nav-link" data-view="projects">Projects</a>
+                    <a href="#" class="nav-link" data-view="students">Find Students</a>
+                    <a href="#" class="nav-link" data-view="profile">Profile</a>
+                </div>
+                <div class="nav-user">
+                    <span id="user-name"></span>
+                    <button id="logout-btn" class="btn btn-secondary">Logout</button>
+                </div>
+            </nav>
+
+            <div class="dashboard-container">
+                <!-- Overview View -->
+                <div id="overview-view" class="dashboard-view active">
+                    <div class="welcome-section">
+                        <h1>Welcome, <span id="welcome-name"></span>!</h1>
+                        <p>Manage your capstone projects and collaborate with your team</p>
+                    </div>
+
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <h3 id="project-count">0</h3>
+                            <p>My Projects</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3 id="task-count">0</h3>
+                            <p>Active Tasks</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3 id="message-count">0</h3>
+                            <p>Messages</p>
+                        </div>
+                    </div>
+
+                    <div class="quick-actions">
+                        <h2>Quick Actions</h2>
+                        <div class="action-buttons">
+                            <button class="btn btn-primary" onclick="showView('projects')">Browse Projects</button>
+                            <button class="btn btn-primary" onclick="showView('students')">Find Teammates</button>
+                            <button class="btn btn-primary faculty-only" onclick="showCreateProject()">Create Project</button>
+                        </div>
+                    </div>
+
+                    <div class="recent-activity">
+                        <h2>My Projects</h2>
+                        <div id="my-projects-list"></div>
+                    </div>
+                </div>
+
+                <!-- Projects View -->
+                <div id="projects-view" class="dashboard-view">
+                    <div class="view-header">
+                        <h1>Project Repository</h1>
+                        <div class="header-actions">
+                            <input type="text" id="project-search" placeholder="Search projects..." class="search-input">
+                            <button class="btn btn-primary faculty-only" onclick="showCreateProject()">+ Create Project</button>
+                        </div>
+                    </div>
+
+                    <div id="projects-grid" class="projects-grid"></div>
+                </div>
+
+                <!-- Students View -->
+                <div id="students-view" class="dashboard-view">
+                    <div class="view-header">
+                        <h1>Find Teammates</h1>
+                        <input type="text" id="student-search" placeholder="Search by skills, interests, name..." class="search-input">
+                    </div>
+
+                    <div id="students-grid" class="students-grid"></div>
+                </div>
+
+                <!-- Profile View -->
+                <div id="profile-view" class="dashboard-view">
+                    <div class="view-header">
+                        <h1>My Profile</h1>
+                    </div>
+
+                    <div class="profile-card">
+                        <form id="profile-form">
+                            <div class="form-group">
+                                <label>Name</label>
+                                <input type="text" id="profile-name" readonly>
+                            </div>
+                            <div class="form-group">
+                                <label>Email</label>
+                                <input type="email" id="profile-email" readonly>
+                            </div>
+                            <div class="form-group">
+                                <label>Biography</label>
+                                <textarea id="profile-bio" rows="4" placeholder="Tell others about yourself..."></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label>Skills</label>
+                                <input type="text" id="profile-skills" placeholder="e.g., Python, React, Machine Learning">
+                            </div>
+                            <div class="form-group">
+                                <label>Interests</label>
+                                <input type="text" id="profile-interests" placeholder="e.g., AI, Web Development, Data Science">
+                            </div>
+                            <button type="submit" class="btn btn-primary">Update Profile</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Project Detail Modal -->
+        <div id="project-modal" class="modal">
+            <div class="modal-content modal-large">
+                <span class="close">&times;</span>
+                <div class="modal-header">
+                    <h2 id="project-modal-title"></h2>
+                    <div class="project-actions">
+                        <button id="join-project-btn" class="btn btn-primary student-only">Join Project</button>
+                        <button id="leave-project-btn" class="btn btn-danger student-only" style="display: none;">Leave Project</button>
+                    </div>
+                </div>
+                
+                <div class="modal-body">
+                    <div class="project-tabs">
+                        <button class="tab-btn active" data-tab="overview">Overview</button>
+                        <button class="tab-btn" data-tab="team">Team</button>
+                        <button class="tab-btn" data-tab="messages">Messages</button>
+                        <button class="tab-btn" data-tab="tasks">Tasks</button>
+                        <button class="tab-btn" data-tab="milestones">Milestones</button>
+                    </div>
+
+                    <div class="tab-content active" id="overview-tab">
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <label>Course:</label>
+                                <span id="project-course"></span>
+                            </div>
+                            <div class="info-item">
+                                <label>Capacity:</label>
+                                <span id="project-capacity"></span>
+                            </div>
+                            <div class="info-item">
+                                <label>Status:</label>
+                                <span id="project-status"></span>
+                            </div>
+                            <div class="info-item">
+                                <label>Created By:</label>
+                                <span id="project-creator"></span>
+                            </div>
+                        </div>
+                        <div class="project-description">
+                            <h3>Description</h3>
+                            <p id="project-description"></p>
+                        </div>
+                    </div>
+
+                    <div class="tab-content" id="team-tab">
+                        <div id="team-members-list"></div>
+                    </div>
+
+                    <div class="tab-content" id="messages-tab">
+                        <div class="messages-container">
+                            <div id="messages-list"></div>
+                            <form id="message-form" class="message-form">
+                                <input type="text" id="message-input" placeholder="Type a message..." required>
+                                <button type="submit" class="btn btn-primary">Send</button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="tab-content" id="tasks-tab">
+                        <div class="tasks-header">
+                            <h3>Tasks</h3>
+                            <button class="btn btn-primary btn-sm" onclick="showCreateTask()">+ Add Task</button>
+                        </div>
+                        <div id="tasks-list"></div>
+                    </div>
+
+                    <div class="tab-content" id="milestones-tab">
+                        <div class="milestones-header faculty-only">
+                            <h3>Milestones</h3>
+                            <button class="btn btn-primary btn-sm" onclick="showCreateMilestone()">+ Add Milestone</button>
+                        </div>
+                        <div id="milestones-list"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Create Project Modal -->
+        <div id="create-project-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Create New Project</h2>
+                <form id="create-project-form">
+                    <div class="form-group">
+                        <label for="new-project-name">Project Name</label>
+                        <input type="text" id="new-project-name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-project-description">Description</label>
+                        <textarea id="new-project-description" rows="4" required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-project-course">Course</label>
+                        <input type="text" id="new-project-course" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-project-capacity">Team Capacity</label>
+                        <input type="number" id="new-project-capacity" min="1" max="10" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Create Project</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Create Task Modal -->
+        <div id="create-task-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Create New Task</h2>
+                <form id="create-task-form">
+                    <div class="form-group">
+                        <label for="new-task-title">Task Title</label>
+                        <input type="text" id="new-task-title" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-task-description">Description</label>
+                        <textarea id="new-task-description" rows="3"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-task-assignee">Assign To</label>
+                        <select id="new-task-assignee"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-task-due">Due Date</label>
+                        <input type="datetime-local" id="new-task-due">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Create Task</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Create Milestone Modal -->
+        <div id="create-milestone-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Create Milestone</h2>
+                <form id="create-milestone-form">
+                    <div class="form-group">
+                        <label for="new-milestone-title">Milestone Title</label>
+                        <input type="text" id="new-milestone-title" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-milestone-description">Description</label>
+                        <textarea id="new-milestone-description" rows="3"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-milestone-due">Due Date</label>
+                        <input type="datetime-local" id="new-milestone-due" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Create Milestone</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
