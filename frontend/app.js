@@ -1,11 +1,13 @@
 // API Configuration
-const API_URL = 'http://localhost:5000/api';
+const API_URL = 'http://localhost:5001/api';
 
 // Global State
 let currentUser = null;
 let currentProject = null;
 let projects = [];
 let students = [];
+let currentPage = 1;
+const PROJECTS_PER_PAGE = 6;
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
@@ -246,6 +248,7 @@ async function loadProjects(keyword = '') {
         });
         
         projects = await response.json();
+        currentPage = 1;  // Reset to first page on new search
         displayProjects(projects);
     } catch (error) {
         console.error('Error loading projects:', error);
@@ -257,25 +260,86 @@ function displayProjects(projectsList) {
     
     if (projectsList.length === 0) {
         grid.innerHTML = '<div class="empty-state"><h3>No projects found</h3><p>Try adjusting your search</p></div>';
+        updatePaginationControls(0);
         return;
     }
     
-    grid.innerHTML = projectsList.map(project => `
+    // Calculate pagination
+    const totalPages = Math.ceil(projectsList.length / PROJECTS_PER_PAGE);
+    const startIndex = (currentPage - 1) * PROJECTS_PER_PAGE;
+    const endIndex = startIndex + PROJECTS_PER_PAGE;
+    const paginatedProjects = projectsList.slice(startIndex, endIndex);
+    
+    // Display projects
+    grid.innerHTML = paginatedProjects.map(project => {
+        const isFull = project.current_members >= project.capacity;
+        const statusText = isFull ? 'Full' : 'Open';
+        const statusClass = isFull ? 'full' : 'open';
+        
+        return `
         <div class="project-card" onclick="openProjectModal(${project.id})">
             <div class="project-card-header">
                 <div>
                     <h3>${project.name}</h3>
                     <small>${project.course}</small>
                 </div>
-                <span class="project-status status-${project.status}">${project.status}</span>
+                <span class="project-status status-${statusClass}">${statusText}</span>
             </div>
+            
+            <div class="project-team-members">
+                <h4>Team Members (${project.current_members}/${project.capacity})</h4>
+                <div id="team-members-${project.id}" class="team-members-list"></div>
+            </div>
+            
             <p>${project.description}</p>
+            
             <div class="project-meta">
-                <span>👥 ${project.current_members}/${project.capacity}</span>
-                <span>${project.creator.name}</span>
+                <span>Created by: ${project.creator.name}</span>
             </div>
         </div>
-    `).join('');
+        `;
+    }).join('');
+    
+    updatePaginationControls(totalPages);
+}
+
+function updatePaginationControls(totalPages) {
+    const prevBtn = document.getElementById('prev-page-btn');
+    const nextBtn = document.getElementById('next-page-btn');
+    const paginationInfo = document.getElementById('pagination-info');
+    
+    if (totalPages <= 1) {
+        prevBtn.style.display = 'none';
+        nextBtn.style.display = 'none';
+        paginationInfo.textContent = '';
+        return;
+    }
+    
+    // Show/hide prev button
+    prevBtn.style.display = currentPage > 1 ? 'inline-block' : 'none';
+    
+    // Show/hide next button
+    nextBtn.style.display = currentPage < totalPages ? 'inline-block' : 'none';
+    
+    // Update page info
+    paginationInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+}
+
+function nextPage() {
+    const totalPages = Math.ceil(projects.length / PROJECTS_PER_PAGE);
+    if (currentPage < totalPages) {
+        currentPage++;
+        displayProjects(projects);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+}
+
+function previousPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        displayProjects(projects);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 }
 
 function searchProjects(keyword) {
