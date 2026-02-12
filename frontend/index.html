@@ -154,8 +154,16 @@
                         <div class="action-buttons">
                             <button class="btn btn-primary" onclick="showView('projects')">Browse Projects</button>
                             <button class="btn btn-primary" onclick="showView('students')">Find Teammates</button>
+                            <button class="btn btn-primary" onclick="showCustomProjectModal()">Submit Custom Project</button>
                             <button class="btn btn-primary faculty-only" onclick="showCreateProject()">Create Project</button>
                         </div>
+                    </div>
+
+                    <!-- Faculty review panel -->
+                    <div class="recent-activity faculty-only">
+                        <h2>Custom Project Submissions</h2>
+                        <p class="hint-text">Review and approve/reject student/faculty submitted project ideas.</p>
+                        <div id="custom-submissions-list" class="submissions-list"></div>
                     </div>
 
                     <div class="recent-activity">
@@ -170,6 +178,7 @@
                         <h1>Project Repository</h1>
                         <div class="header-actions">
                             <input type="text" id="project-search" placeholder="Search projects..." class="search-input">
+                            <button class="btn btn-secondary" onclick="showCustomProjectModal()">+ Submit Custom Project</button>
                             <button class="btn btn-primary faculty-only" onclick="showCreateProject()">+ Create Project</button>
                         </div>
                     </div>
@@ -324,6 +333,40 @@
                         <input type="number" id="new-project-capacity" min="1" max="10" required>
                     </div>
                     <button type="submit" class="btn btn-primary">Create Project</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Custom Project Submission Modal -->
+        <div id="custom-project-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Submit Custom Project</h2>
+                <p class="hint-text">
+                    Students and faculty can submit a project idea here. Faculty can later approve/reject submissions.
+                </p>
+                <form id="custom-project-form">
+                    <div class="form-group">
+                        <label for="custom-project-name">Project Name</label>
+                        <input type="text" id="custom-project-name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="custom-project-description">Description</label>
+                        <textarea id="custom-project-description" rows="4" required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="custom-project-course">Course</label>
+                        <input type="text" id="custom-project-course" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="custom-project-capacity">Suggested Team Capacity</label>
+                        <input type="number" id="custom-project-capacity" min="1" max="10" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="custom-project-notes">Notes / Justification (optional)</label>
+                        <textarea id="custom-project-notes" rows="3" placeholder="Why is this project a good fit?"></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Submit</button>
                 </form>
             </div>
         </div>
