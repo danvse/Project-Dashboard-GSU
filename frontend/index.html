@@ -175,6 +175,12 @@
                     </div>
 
                     <div id="projects-grid" class="projects-grid"></div>
+                    
+                    <div class="pagination-controls">
+                        <button id="prev-page-btn" class="btn btn-secondary" onclick="previousPage()" style="display: none;">← Previous</button>
+                        <span id="pagination-info" class="pagination-info"></span>
+                        <button id="next-page-btn" class="btn btn-secondary" onclick="nextPage()" style="display: none;">Next →</button>
+                    </div>
                 </div>
 
                 <!-- Students View -->
@@ -238,9 +244,6 @@
                     <div class="project-tabs">
                         <button class="tab-btn active" data-tab="overview">Overview</button>
                         <button class="tab-btn" data-tab="team">Team</button>
-                        <button class="tab-btn" data-tab="messages">Messages</button>
-                        <button class="tab-btn" data-tab="tasks">Tasks</button>
-                        <button class="tab-btn" data-tab="milestones">Milestones</button>
                     </div>
 
                     <div class="tab-content active" id="overview-tab">
@@ -272,31 +275,7 @@
                         <div id="team-members-list"></div>
                     </div>
 
-                    <div class="tab-content" id="messages-tab">
-                        <div class="messages-container">
-                            <div id="messages-list"></div>
-                            <form id="message-form" class="message-form">
-                                <input type="text" id="message-input" placeholder="Type a message..." required>
-                                <button type="submit" class="btn btn-primary">Send</button>
-                            </form>
-                        </div>
-                    </div>
 
-                    <div class="tab-content" id="tasks-tab">
-                        <div class="tasks-header">
-                            <h3>Tasks</h3>
-                            <button class="btn btn-primary btn-sm" onclick="showCreateTask()">+ Add Task</button>
-                        </div>
-                        <div id="tasks-list"></div>
-                    </div>
-
-                    <div class="tab-content" id="milestones-tab">
-                        <div class="milestones-header faculty-only">
-                            <h3>Milestones</h3>
-                            <button class="btn btn-primary btn-sm" onclick="showCreateMilestone()">+ Add Milestone</button>
-                        </div>
-                        <div id="milestones-list"></div>
-                    </div>
                 </div>
             </div>
         </div>

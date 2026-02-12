@@ -333,8 +333,9 @@ body {
 /* Projects Grid */
 .projects-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
     gap: 24px;
+    margin-bottom: 24px;
 }
 
 .project-card {
@@ -400,6 +401,66 @@ body {
     border-top: 1px solid var(--border);
     font-size: 13px;
     color: var(--text-secondary);
+}
+
+.project-team-members {
+    margin-bottom: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.project-team-members h4 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+}
+
+.team-members-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 24px;
+}
+
+.team-member-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #e0e7ff;
+    border: 2px solid var(--primary-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--primary-color);
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.team-member-avatar:hover {
+    transform: scale(1.1);
+}
+
+.pagination-controls {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+    margin-top: 32px;
+    padding: 24px;
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+}
+
+.pagination-info {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    min-width: 120px;
+    text-align: center;
 }
 
 /* Students Grid */
@@ -794,5 +855,14 @@ body {
     .modal-content {
         width: 95%;
         padding: 20px;
+    }
+
+    .pagination-controls {
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .pagination-controls button {
+        width: 100%;
     }
 }
