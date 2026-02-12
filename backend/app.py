@@ -91,6 +91,25 @@ class Milestone(db.Model):
     status = db.Column(db.String(20), default='upcoming')  # 'upcoming', 'completed'
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class CustomProjectSubmission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    course = db.Column(db.String(100), nullable=False)
+    capacity = db.Column(db.Integer, nullable=False)
+    notes = db.Column(db.Text)
+
+    status = db.Column(db.String(20), default='pending')  # pending / approved / rejected
+
+    submitter_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    reviewer_id = db.Column(db.Integer, db.ForeignKey('user.id'))  # faculty who approved/rejected
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    reviewed_at = db.Column(db.DateTime)
+
+    submitter = db.relationship('User', foreign_keys=[submitter_id])
+    reviewer = db.relationship('User', foreign_keys=[reviewer_id])
+
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
@@ -500,6 +519,94 @@ def get_students():
         'interests': s.interests,
         'biography': s.biography
     } for s in students]), 200
+
+@app.route('/api/custom-projects', methods=['GET', 'POST'])
+@login_required
+def custom_projects():
+    if request.method == 'POST':
+        data = request.json
+
+        # Basic validation
+        required = ['name', 'description', 'course', 'capacity']
+        for r in required:
+            if not data.get(r):
+                return jsonify({'error': f'Missing required field: {r}'}), 400
+
+        submission = CustomProjectSubmission(
+            name=data['name'],
+            description=data['description'],
+            course=data['course'],
+            capacity=int(data['capacity']),
+            notes=data.get('notes', ''),
+            submitter_id=current_user.id,
+            status='pending'
+        )
+
+        db.session.add(submission)
+        db.session.commit()
+
+        return jsonify({'message': 'Custom project submitted', 'submission_id': submission.id}), 201
+
+    # GET
+    if current_user.role == 'faculty':
+        subs = CustomProjectSubmission.query.order_by(CustomProjectSubmission.created_at.desc()).all()
+    else:
+        subs = CustomProjectSubmission.query.filter_by(submitter_id=current_user.id)\
+            .order_by(CustomProjectSubmission.created_at.desc()).all()
+
+    return jsonify([{
+        'id': s.id,
+        'name': s.name,
+        'description': s.description,
+        'course': s.course,
+        'capacity': s.capacity,
+        'notes': s.notes,
+        'status': s.status,
+        'submitter_id': s.submitter_id,
+        'submitter_name': f"{s.submitter.first_name} {s.submitter.last_name}",
+        'created_at': s.created_at.isoformat(),
+        'reviewer_id': s.reviewer_id,
+        'reviewed_at': s.reviewed_at.isoformat() if s.reviewed_at else None
+    } for s in subs]), 200
+
+
+@app.route('/api/custom-projects/<int:submission_id>', methods=['PUT'])
+@login_required
+def review_custom_project(submission_id):
+    if current_user.role != 'faculty':
+        return jsonify({'error': 'Only faculty can review submissions'}), 403
+
+    submission = CustomProjectSubmission.query.get_or_404(submission_id)
+    data = request.json
+
+    new_status = data.get('status')
+    if new_status not in ['approved', 'rejected']:
+        return jsonify({'error': 'Invalid status. Use approved or rejected.'}), 400
+
+    if submission.status != 'pending':
+        return jsonify({'error': 'Submission already reviewed'}), 400
+
+    submission.status = new_status
+    submission.reviewer_id = current_user.id
+    submission.reviewed_at = datetime.utcnow()
+
+    # If approved, create a real Project in the repository
+    if new_status == 'approved':
+        project = Project(
+            name=submission.name,
+            description=submission.description,
+            capacity=submission.capacity,
+            course=submission.course,
+            creator_id=current_user.id,   # faculty becomes creator
+            status='open'
+        )
+        db.session.add(project)
+
+    db.session.commit()
+
+    if new_status == 'approved':
+        return jsonify({'message': 'Approved and created a new project in the repository'}), 200
+    return jsonify({'message': 'Rejected submission'}), 200
 
 # Initialize database
 with app.app_context():
