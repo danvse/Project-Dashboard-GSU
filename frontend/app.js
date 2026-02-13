@@ -204,15 +204,12 @@ function updateRoleVisibility() {
     const studentElements = document.querySelectorAll('.student-only');
     const facultyElements = document.querySelectorAll('.faculty-only');
     
-    // Debugging: This will print the role to your browser console (F12)
-    console.log("Current User Role:", currentUser ? currentUser.role : "No user");
-
-    if (currentUser && currentUser.role === 'student') {
-        studentElements.forEach(el => el.style.display = 'block');
+    if (currentUser.role === 'student') {
+        studentElements.forEach(el => el.style.display = '');
         facultyElements.forEach(el => el.style.display = 'none');
-    } else if (currentUser && currentUser.role === 'faculty') {
+    } else {
         studentElements.forEach(el => el.style.display = 'none');
-        facultyElements.forEach(el => el.style.display = 'block'); // Use 'block' here
+        facultyElements.forEach(el => el.style.display = '');
     }
 }
 
