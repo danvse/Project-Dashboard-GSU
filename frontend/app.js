@@ -209,12 +209,22 @@ function updateRoleVisibility() {
 
     if (currentUser.role === 'faculty') {
         // Faculty: Show faculty items, hide student items
-        studentElements.forEach(el => el.setAttribute('style', 'display: none !important'));
-        facultyElements.forEach(el => el.setAttribute('style', 'display: block !important'));
+        studentElements.forEach(el => {
+            // Skip buttons that are dynamically controlled (like join-project-btn)
+            if (!el.id || !el.id.includes('project-btn')) {
+                el.style.display = 'none';
+            }
+        });
+        facultyElements.forEach(el => el.style.display = '');
     } else {
         // Students: Show student items, hide faculty items
-        studentElements.forEach(el => el.setAttribute('style', 'display: block !important'));
-        facultyElements.forEach(el => el.setAttribute('style', 'display: none !important'));
+        studentElements.forEach(el => {
+            // Skip buttons that are dynamically controlled
+            if (!el.id || !el.id.includes('project-btn')) {
+                el.style.display = '';
+            }
+        });
+        facultyElements.forEach(el => el.style.display = 'none');
     }
 }
 
@@ -553,12 +563,34 @@ async function openProjectModal(projectId) {
         document.getElementById('project-creator').textContent = currentProject.creator.name;
         document.getElementById('project-description').textContent = currentProject.description;
         
-        // Update join/leave buttons
-        const isMember = currentProject.team_members.some(m => m.id === currentUser.id);
-        document.getElementById('join-project-btn').style.display = 
-            (currentUser.role === 'student' && !isMember && currentProject.status !== 'full') ? '' : 'none';
-        document.getElementById('leave-project-btn').style.display = 
-            (currentUser.role === 'student' && isMember) ? '' : 'none';
+        // Update join/leave buttons visibility
+        const joinBtn = document.getElementById('join-project-btn');
+        const leaveBtn = document.getElementById('leave-project-btn');
+        
+        if (currentUser.role === 'student') {
+            const isMember = currentProject.team_members.some(m => m.id === currentUser.id);
+            const isFull = currentProject.status === 'full';
+            
+            // Show join button if: not a member AND project not full
+            if (!isMember && !isFull) {
+                joinBtn.style.display = 'inline-block';
+                leaveBtn.style.display = 'none';
+            } 
+            // Show leave button if: is a member
+            else if (isMember) {
+                joinBtn.style.display = 'none';
+                leaveBtn.style.display = 'inline-block';
+            }
+            // Hide both if: not a member AND project is full
+            else {
+                joinBtn.style.display = 'none';
+                leaveBtn.style.display = 'none';
+            }
+        } else {
+            // Faculty shouldn't see these buttons
+            joinBtn.style.display = 'none';
+            leaveBtn.style.display = 'none';
+        }
         
         // Load team members
         displayTeamMembers(currentProject.team_members);
