@@ -204,12 +204,17 @@ function updateRoleVisibility() {
     const studentElements = document.querySelectorAll('.student-only');
     const facultyElements = document.querySelectorAll('.faculty-only');
     
-    if (currentUser.role === 'student') {
-        studentElements.forEach(el => el.style.display = '');
-        facultyElements.forEach(el => el.style.display = 'none');
+    // Check your browser console (F12) to see this output
+    console.log("Updating visibility for role:", currentUser.role);
+
+    if (currentUser.role === 'faculty') {
+        // Faculty: Show faculty items, hide student items
+        studentElements.forEach(el => el.setAttribute('style', 'display: none !important'));
+        facultyElements.forEach(el => el.setAttribute('style', 'display: block !important'));
     } else {
-        studentElements.forEach(el => el.style.display = 'none');
-        facultyElements.forEach(el => el.style.display = '');
+        // Students: Show student items, hide faculty items
+        studentElements.forEach(el => el.setAttribute('style', 'display: block !important'));
+        facultyElements.forEach(el => el.setAttribute('style', 'display: none !important'));
     }
 }
 
