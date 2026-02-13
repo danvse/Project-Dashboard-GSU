@@ -91,6 +91,33 @@ class Milestone(db.Model):
     status = db.Column(db.String(20), default='upcoming')  # 'upcoming', 'completed'
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class CRN(db.Model):
+    """Course Reference Number model"""
+    id = db.Column(db.Integer, primary_key=True)
+    crn_code = db.Column(db.String(20), unique=True, nullable=False)
+    course_name = db.Column(db.String(200), nullable=False)
+    faculty_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationship
+    faculty = db.relationship('User', backref='crns_created', lazy=True)
+
+class UserStory(db.Model):
+    """User Story/Announcement model for dashboard"""
+    id = db.Column(db.Integer, primary_key=True)
+    author_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id'))  # NULL for CRN-wide announcements
+    title = db.Column(db.String(200), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    story_type = db.Column(db.String(20), default='announcement')  # 'announcement', 'update', 'milestone'
+    priority = db.Column(db.String(20), default='normal')  # 'low', 'normal', 'high'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    author = db.relationship('User', backref='user_stories', lazy=True)
+    project = db.relationship('Project', backref='announcements', lazy=True)
+
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
@@ -159,7 +186,7 @@ def logout():
 @login_required
 def user_profile():
     if request.method == 'GET':
-        return jsonify({
+        profile_data = {
             'id': current_user.id,
             'username': current_user.username,
             'email': current_user.email,
@@ -168,8 +195,22 @@ def user_profile():
             'role': current_user.role,
             'biography': current_user.biography,
             'skills': current_user.skills,
-            'interests': current_user.interests
-        }), 200
+            'interests': current_user.interests,
+            'crn': current_user.crn,
+            'title': current_user.title
+        }
+        
+        # If faculty, include their created CRNs
+        if current_user.role == 'faculty':
+            crns = CRN.query.filter_by(faculty_id=current_user.id).all()
+            profile_data['crns_created'] = [{
+                'id': crn.id,
+                'crn_code': crn.crn_code,
+                'course_name': crn.course_name,
+                'created_at': crn.created_at.isoformat()
+            } for crn in crns]
+        
+        return jsonify(profile_data), 200
     
     elif request.method == 'PUT':
         data = request.json
@@ -478,28 +519,255 @@ def project_milestones(project_id):
 @app.route('/api/students', methods=['GET'])
 @login_required
 def get_students():
-    """Get all students for team finding"""
     keyword = request.args.get('keyword', '')
     
     query = User.query.filter_by(role='student')
     
     if keyword:
         query = query.filter(
-            (User.skills.contains(keyword)) | 
-            (User.interests.contains(keyword)) |
             (User.first_name.contains(keyword)) |
-            (User.last_name.contains(keyword))
+            (User.last_name.contains(keyword)) |
+            (User.username.contains(keyword)) |
+            (User.skills.contains(keyword)) |
+            (User.interests.contains(keyword))
         )
     
     students = query.all()
     
     return jsonify([{
         'id': s.id,
-        'name': f"{s.first_name} {s.last_name}",
+        'username': s.username,
+        'first_name': s.first_name,
+        'last_name': s.last_name,
         'skills': s.skills,
         'interests': s.interests,
         'biography': s.biography
     } for s in students]), 200
+
+# User Stories / Announcements
+@app.route('/api/user-stories', methods=['GET', 'POST'])
+@login_required
+def user_stories():
+    """Get all user stories or create a new one"""
+    if request.method == 'GET':
+        # Get all stories that the current user should see
+        if current_user.role == 'faculty':
+            # Faculty sees all announcements from students in their CRN
+            stories = UserStory.query.join(User, UserStory.author_id == User.id).filter(
+                (User.crn == current_user.crn) | (UserStory.author_id == current_user.id)
+            ).order_by(UserStory.created_at.desc()).all()
+        else:
+            # Students see:
+            # 1. Announcements from faculty in their CRN (project_id is NULL)
+            # 2. Announcements from teammates in their projects (project_id is set)
+            
+            # Get user's project IDs
+            team_memberships = TeamMember.query.filter_by(student_id=current_user.id).all()
+            user_project_ids = [tm.project_id for tm in team_memberships]
+            
+            # Get stories from faculty in same CRN (CRN-wide announcements)
+            faculty_stories = UserStory.query.join(User, UserStory.author_id == User.id).filter(
+                User.role == 'faculty',
+                User.crn == current_user.crn,
+                UserStory.project_id.is_(None)
+            ).all()
+            
+            # Get stories from project teammates
+            project_stories = UserStory.query.filter(
+                UserStory.project_id.in_(user_project_ids)
+            ).all() if user_project_ids else []
+            
+            # Combine and remove duplicates
+            stories_dict = {s.id: s for s in faculty_stories + project_stories}
+            stories = sorted(stories_dict.values(), key=lambda x: x.created_at, reverse=True)
+        
+        return jsonify([{
+            'id': story.id,
+            'author_id': story.author_id,
+            'author_name': f"{story.author.first_name} {story.author.last_name}",
+            'author_role': story.author.role,
+            'title': story.title,
+            'content': story.content,
+            'story_type': story.story_type,
+            'priority': story.priority,
+            'project_id': story.project_id,
+            'created_at': story.created_at.isoformat(),
+            'updated_at': story.updated_at.isoformat()
+        } for story in stories]), 200
+    
+    # POST - Create new user story
+    data = request.json
+    
+    if not data.get('title') or not data.get('content'):
+        return jsonify({'error': 'Title and content are required'}), 400
+    
+    project_id = data.get('project_id')
+    
+    # Validate permissions
+    if current_user.role == 'student':
+        # Students can only create announcements for their projects
+        if not project_id:
+            return jsonify({'error': 'Students must specify a project for announcements'}), 403
+        
+        # Check if student is a member of this project
+        membership = TeamMember.query.filter_by(
+            student_id=current_user.id,
+            project_id=project_id
+        ).first()
+        
+        if not membership:
+            return jsonify({'error': 'You are not a member of this project'}), 403
+    else:
+        # Faculty can create CRN-wide announcements (project_id = None)
+        # or project-specific announcements
+        pass
+    
+    story = UserStory(
+        author_id=current_user.id,
+        project_id=project_id,
+        title=data['title'],
+        content=data['content'],
+        story_type=data.get('story_type', 'announcement'),
+        priority=data.get('priority', 'normal')
+    )
+    
+    db.session.add(story)
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'User story created successfully',
+        'story_id': story.id
+    }), 201
+
+@app.route('/api/user-stories/<int:story_id>', methods=['PUT', 'DELETE'])
+@login_required
+def manage_user_story(story_id):
+    """Update or delete a user story"""
+    story = UserStory.query.get_or_404(story_id)
+    
+    # Check if user is the author or faculty
+    if story.author_id != current_user.id and current_user.role != 'faculty':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    if request.method == 'PUT':
+        data = request.json
+        
+        if data.get('title'):
+            story.title = data['title']
+        if data.get('content'):
+            story.content = data['content']
+        if data.get('story_type'):
+            story.story_type = data['story_type']
+        if data.get('priority'):
+            story.priority = data['priority']
+        
+        story.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({'message': 'User story updated successfully'}), 200
+    
+    # DELETE
+    db.session.delete(story)
+    db.session.commit()
+    
+    return jsonify({'message': 'User story deleted successfully'}), 200
+
+# CRN Management
+@app.route('/api/crns', methods=['GET', 'POST'])
+def manage_crns():
+    """Get all CRNs or create a new one (faculty only for POST)"""
+    if request.method == 'GET':
+        # Anyone can view available CRNs for registration
+        crns = CRN.query.all()
+        return jsonify([{
+            'id': crn.id,
+            'crn_code': crn.crn_code,
+            'course_name': crn.course_name,
+            'faculty_name': f"{crn.faculty.first_name} {crn.faculty.last_name}",
+            'created_at': crn.created_at.isoformat()
+        } for crn in crns]), 200
+    
+    elif request.method == 'POST':
+        # Only faculty can create CRNs
+        if not current_user.is_authenticated:
+            return jsonify({'error': 'Authentication required'}), 401
+        
+        if current_user.role != 'faculty':
+            return jsonify({'error': 'Only faculty can create CRNs'}), 403
+        
+        data = request.json
+        
+        if not data.get('crn_code') or not data.get('course_name'):
+            return jsonify({'error': 'CRN code and course name are required'}), 400
+        
+        # Check if CRN already exists
+        existing_crn = CRN.query.filter_by(crn_code=data['crn_code']).first()
+        if existing_crn:
+            return jsonify({'error': 'CRN already exists'}), 400
+        
+        crn = CRN(
+            crn_code=data['crn_code'],
+            course_name=data['course_name'],
+            faculty_id=current_user.id
+        )
+        
+        # Update faculty's CRN if not set
+        if not current_user.crn:
+            current_user.crn = data['crn_code']
+        
+        db.session.add(crn)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'CRN created successfully',
+            'crn_id': crn.id
+        }), 201
+
+@app.route('/api/crns/<int:crn_id>', methods=['DELETE'])
+@login_required
+def delete_crn(crn_id):
+    """Delete a CRN (faculty only)"""
+    crn = CRN.query.get_or_404(crn_id)
+    
+    # Only the faculty who created it can delete
+    if crn.faculty_id != current_user.id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    # Check if any students are using this CRN
+    students_with_crn = User.query.filter_by(crn=crn.crn_code).count()
+    if students_with_crn > 1:  # More than just the faculty member
+        return jsonify({'error': 'Cannot delete CRN with active students'}), 400
+    
+    db.session.delete(crn)
+    db.session.commit()
+    
+    return jsonify({'message': 'CRN deleted successfully'}), 200
+
+# Assignment Calendar
+@app.route('/api/calendar/assignments', methods=['GET'])
+@login_required
+def get_assignment_calendar():
+    """Get all assignments/tasks for calendar display"""
+    if current_user.role != 'student':
+        return jsonify({'error': 'Only students can view assignment calendar'}), 403
+    
+    # Get all tasks assigned to current student
+    tasks = Task.query.filter_by(assignee_id=current_user.id).all()
+    
+    assignments = []
+    for task in tasks:
+        if task.due_date:
+            assignments.append({
+                'id': task.id,
+                'title': task.title,
+                'description': task.description,
+                'due_date': task.due_date.isoformat(),
+                'status': task.status,
+                'project_id': task.project_id,
+                'project_name': task.project.name
+            })
+    
+    return jsonify(assignments), 200
 
 # Initialize database
 with app.app_context():

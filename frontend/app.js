@@ -7,7 +7,6 @@ let currentProject = null;
 let projects = [];
 let students = [];
 let currentPage = 1;
-let userProjectId = null;  // Track which project the user is in
 const PROJECTS_PER_PAGE = 6;
 
 // Initialize App
@@ -176,6 +175,9 @@ function checkAuthStatus() {
     if (savedUser) {
         currentUser = JSON.parse(savedUser);
         showDashboard();
+    } else {
+        // Load available CRNs for registration
+        loadCRNs();
     }
 }
 
@@ -195,7 +197,6 @@ function showDashboard() {
     loadProjects();
     loadStudents();
     loadUserProfile();
-    checkUserProjectMembership();  // Check which project user is in
     showView('overview');
 }
 
@@ -227,6 +228,7 @@ function showView(viewName) {
         loadStudents();
     } else if (viewName === 'overview') {
         loadMyProjects();
+        loadUserStories();  // Load announcements in overview
     }
 }
 
@@ -348,26 +350,6 @@ function searchProjects(keyword) {
     loadProjects(keyword);
 }
 
-async function checkUserProjectMembership() {
-    try {
-        const response = await fetch(`${API_URL}/projects`, {
-            credentials: 'include'
-        });
-        
-        const allProjects = await response.json();
-        
-        // Find project the user is in (if student)
-        if (currentUser.role === 'student') {
-            const userProject = allProjects.find(p => 
-                p.team_members && p.team_members.some(m => m.id === currentUser.id)
-            );
-            userProjectId = userProject ? userProject.id : null;
-        }
-    } catch (error) {
-        console.error('Error checking project membership:', error);
-    }
-}
-
 async function loadMyProjects() {
     try {
         const response = await fetch(`${API_URL}/projects`, {
@@ -464,6 +446,11 @@ async function loadUserProfile() {
         document.getElementById('profile-bio').value = profile.biography || '';
         document.getElementById('profile-skills').value = profile.skills || '';
         document.getElementById('profile-interests').value = profile.interests || '';
+        
+        // Display CRNs for faculty
+        if (currentUser.role === 'faculty' && profile.crns_created) {
+            displayCRNs(profile.crns_created);
+        }
     } catch (error) {
         console.error('Error loading profile:', error);
     }
@@ -563,19 +550,10 @@ async function openProjectModal(projectId) {
         
         // Update join/leave buttons
         const isMember = currentProject.team_members.some(m => m.id === currentUser.id);
-        const isInAnotherProject = userProjectId && userProjectId !== currentProject.id;
-        
-        // Show join button only if: student, not member, project not full, and not in another project
         document.getElementById('join-project-btn').style.display = 
-            (currentUser.role === 'student' && !isMember && currentProject.status !== 'full' && !isInAnotherProject) ? 'inline-block' : 'none';
+            (currentUser.role === 'student' && !isMember && currentProject.status !== 'full') ? '' : 'none';
         document.getElementById('leave-project-btn').style.display = 
-            (currentUser.role === 'student' && isMember) ? 'inline-block' : 'none';
-        
-        // Show message if student is in another project
-        const joinBtn = document.getElementById('join-project-btn');
-        if (isInAnotherProject && joinBtn) {
-            joinBtn.title = 'You are already in a project and cannot join another';
-        }
+            (currentUser.role === 'student' && isMember) ? '' : 'none';
         
         // Load team members
         displayTeamMembers(currentProject.team_members);
@@ -613,12 +591,6 @@ function displayTeamMembers(members) {
 }
 
 async function joinProject() {
-    // Check if already in a project
-    if (userProjectId) {
-        alert('You are already in a project. You cannot join another project.');
-        return;
-    }
-    
     try {
         const response = await fetch(`${API_URL}/projects/${currentProject.id}/join`, {
             method: 'POST',
@@ -629,10 +601,8 @@ async function joinProject() {
         
         if (response.ok) {
             alert('Successfully joined project!');
-            userProjectId = currentProject.id;  // Update tracking
             openProjectModal(currentProject.id);
             loadProjects();
-            loadMyProjects();  // Refresh my projects
         } else {
             alert(data.error || 'Failed to join project');
         }
@@ -655,10 +625,8 @@ async function leaveProject() {
         
         if (response.ok) {
             alert('Successfully left project');
-            userProjectId = null;  // Clear tracking
             document.getElementById('project-modal').classList.remove('active');
             loadProjects();
-            loadMyProjects();  // Refresh my projects
         } else {
             alert(data.error || 'Failed to leave project');
         }
@@ -962,3 +930,479 @@ async function handleCreateMilestone(e) {
         alert('An error occurred');
     }
 }
+
+// ==========================================
+// USER STORIES / ANNOUNCEMENTS FUNCTIONS
+// ==========================================
+
+async function loadUserStories() {
+    try {
+        const response = await fetch(`${API_URL}/user-stories`, {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const stories = await response.json();
+            displayUserStories(stories);
+        }
+    } catch (error) {
+        console.error('Error loading user stories:', error);
+    }
+}
+
+function displayUserStories(stories) {
+    const container = document.getElementById('user-stories-list');
+    
+    if (!stories || stories.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No announcements yet. Be the first to post!</p></div>';
+        return;
+    }
+    
+    container.innerHTML = stories.map(story => {
+        const canEdit = currentUser && (story.author_id === currentUser.id || currentUser.role === 'faculty');
+        const timeAgo = getTimeAgo(new Date(story.created_at));
+        
+        return `
+            <div class="user-story-card priority-${story.priority}">
+                <div class="user-story-header">
+                    <h3 class="user-story-title">${escapeHtml(story.title)}</h3>
+                    <div class="user-story-meta">
+                        <span class="story-badge type-${story.story_type}">${story.story_type}</span>
+                        ${story.priority === 'high' ? '<span class="story-badge priority-high">HIGH</span>' : ''}
+                    </div>
+                </div>
+                <div class="user-story-content">${escapeHtml(story.content)}</div>
+                <div class="user-story-footer">
+                    <div class="story-author">
+                        <span>Posted by <strong>${escapeHtml(story.author_name)}</strong></span>
+                        <span class="story-author-badge">${story.author_role}</span>
+                        <span>•</span>
+                        <span>${timeAgo}</span>
+                    </div>
+                    ${canEdit ? `
+                        <div class="story-actions">
+                            <button onclick="deleteUserStory(${story.id})">Delete</button>
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function showCreateUserStory() {
+    const modal = document.getElementById('create-userstory-modal');
+    
+    // Load user's projects for project selection
+    if (currentUser.role === 'student' || currentUser.role === 'faculty') {
+        try {
+            const response = await fetch(`${API_URL}/projects`, {
+                credentials: 'include'
+            });
+            
+            const allProjects = await response.json();
+            
+            // For students, filter to their projects; for faculty, show all
+            const userProjects = currentUser.role === 'student' 
+                ? allProjects.filter(p => p.team_members && p.team_members.some(m => m.id === currentUser.id))
+                : allProjects;
+            
+            const projectSelect = document.getElementById('new-story-project');
+            if (projectSelect) {
+                projectSelect.innerHTML = currentUser.role === 'faculty' 
+                    ? '<option value="">All Students in CRN</option>' 
+                    : '<option value="">Select a project</option>';
+                
+                userProjects.forEach(project => {
+                    projectSelect.innerHTML += `<option value="${project.id}">${project.name}</option>`;
+                });
+            }
+        } catch (error) {
+            console.error('Error loading projects:', error);
+        }
+    }
+    
+    modal.classList.add('active');
+}
+
+// Create user story form submission
+document.getElementById('create-userstory-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const storyData = {
+        title: document.getElementById('new-story-title').value,
+        content: document.getElementById('new-story-content').value,
+        story_type: document.getElementById('new-story-type').value,
+        priority: document.getElementById('new-story-priority').value
+    };
+    
+    // For students, include project_id
+    if (currentUser.role === 'student') {
+        const projectSelect = document.getElementById('new-story-project');
+        if (!projectSelect.value) {
+            alert('Please select a project for your announcement');
+            return;
+        }
+        storyData.project_id = parseInt(projectSelect.value);
+    } else {
+        // For faculty, project_id is optional (NULL means CRN-wide)
+        const projectSelect = document.getElementById('new-story-project');
+        if (projectSelect && projectSelect.value) {
+            storyData.project_id = parseInt(projectSelect.value);
+        }
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/user-stories`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify(storyData)
+        });
+        
+        if (response.ok) {
+            alert('Announcement posted successfully!');
+            document.getElementById('create-userstory-modal').classList.remove('active');
+            document.getElementById('create-userstory-form').reset();
+            loadUserStories();
+        } else {
+            const error = await response.json();
+            alert('Failed to post announcement: ' + (error.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error creating user story:', error);
+        alert('An error occurred');
+    }
+});
+
+async function deleteUserStory(storyId) {
+    if (!confirm('Are you sure you want to delete this announcement?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/user-stories/${storyId}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            alert('Announcement deleted successfully');
+            loadUserStories();
+        } else {
+            alert('Failed to delete announcement');
+        }
+    } catch (error) {
+        console.error('Error deleting user story:', error);
+        alert('An error occurred');
+    }
+}
+
+// ==========================================
+// CRN MANAGEMENT FUNCTIONS
+// ==========================================
+
+async function loadCRNs() {
+    try {
+        const response = await fetch(`${API_URL}/crns`, {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const crns = await response.json();
+            displayCRNs(crns);
+            
+            // Also populate the registration CRN select
+            populateRegistrationCRNs(crns);
+        }
+    } catch (error) {
+        console.error('Error loading CRNs:', error);
+    }
+}
+
+function displayCRNs(crns) {
+    const container = document.getElementById('crn-list');
+    
+    if (!container) return;  // Faculty profile may not have this element
+    
+    if (!crns || crns.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No CRNs created yet.</p></div>';
+        return;
+    }
+    
+    container.innerHTML = crns.map(crn => `
+        <div class="crn-card">
+            <div class="crn-header">
+                <div>
+                    <h4>${crn.crn_code}</h4>
+                    <p>${crn.course_name}</p>
+                </div>
+                <span class="crn-faculty">Faculty: ${crn.faculty_name}</span>
+            </div>
+            ${currentUser && currentUser.id === crn.faculty_id ? `
+                <div class="crn-actions">
+                    <button onclick="deleteCRN(${crn.id})" class="btn-danger">Delete</button>
+                </div>
+            ` : ''}
+        </div>
+    `).join('');
+}
+
+function populateRegistrationCRNs(crns) {
+    const crnSelect = document.getElementById('crn');
+    
+    if (!crnSelect) return;
+    
+    crnSelect.innerHTML = '<option value="">Select a CRN</option>';
+    crns.forEach(crn => {
+        crnSelect.innerHTML += `<option value="${crn.crn_code}">${crn.crn_code} - ${crn.course_name}</option>`;
+    });
+}
+
+async function createCRN() {
+    const crnCode = document.getElementById('new-crn-code').value;
+    const courseName = document.getElementById('new-course-name').value;
+    
+    if (!crnCode || !courseName) {
+        alert('Please fill in all fields');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/crns`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                crn_code: crnCode,
+                course_name: courseName
+            })
+        });
+        
+        if (response.ok) {
+            alert('CRN created successfully!');
+            document.getElementById('new-crn-code').value = '';
+            document.getElementById('new-course-name').value = '';
+            loadUserProfile();  // Reload profile to show new CRN
+        } else {
+            const error = await response.json();
+            alert('Failed to create CRN: ' + (error.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error creating CRN:', error);
+        alert('An error occurred');
+    }
+}
+
+async function deleteCRN(crnId) {
+    if (!confirm('Are you sure you want to delete this CRN? Students using this CRN will be affected.')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/crns/${crnId}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            alert('CRN deleted successfully');
+            loadUserProfile();
+        } else {
+            const error = await response.json();
+            alert('Failed to delete CRN: ' + (error.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error deleting CRN:', error);
+        alert('An error occurred');
+    }
+}
+
+// ==========================================
+// CALENDAR FUNCTIONS
+// ==========================================
+
+let currentCalendarDate = new Date();
+let assignmentDates = {};
+
+async function loadAssignmentCalendar() {
+    if (!currentUser || currentUser.role !== 'student') {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/calendar/assignments`, {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const assignments = await response.json();
+            
+            // Group assignments by date
+            assignmentDates = {};
+            assignments.forEach(assignment => {
+                const date = new Date(assignment.due_date);
+                const dateKey = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+                
+                if (!assignmentDates[dateKey]) {
+                    assignmentDates[dateKey] = [];
+                }
+                assignmentDates[dateKey].push(assignment);
+            });
+            
+            renderCalendar();
+        }
+    } catch (error) {
+        console.error('Error loading assignments:', error);
+    }
+}
+
+function renderCalendar() {
+    const year = currentCalendarDate.getFullYear();
+    const month = currentCalendarDate.getMonth();
+    
+    // Update month/year display
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                       'July', 'August', 'September', 'October', 'November', 'December'];
+    document.getElementById('calendar-month-year').textContent = 
+        `${monthNames[month]} ${year}`;
+    
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const prevLastDay = new Date(year, month, 0);
+    
+    const firstDayOfWeek = firstDay.getDay();
+    const daysInMonth = lastDay.getDate();
+    const daysInPrevMonth = prevLastDay.getDate();
+    
+    const calendarGrid = document.getElementById('calendar-grid');
+    calendarGrid.innerHTML = '';
+    
+    // Day headers
+    const dayHeaders = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    dayHeaders.forEach(day => {
+        const header = document.createElement('div');
+        header.className = 'calendar-day-header';
+        header.textContent = day;
+        calendarGrid.appendChild(header);
+    });
+    
+    // Previous month days
+    for (let i = firstDayOfWeek - 1; i >= 0; i--) {
+        const day = daysInPrevMonth - i;
+        addCalendarDay(calendarGrid, day, year, month - 1, true);
+    }
+    
+    // Current month days
+    for (let day = 1; day <= daysInMonth; day++) {
+        addCalendarDay(calendarGrid, day, year, month, false);
+    }
+    
+    // Next month days to fill grid
+    const totalCells = calendarGrid.children.length - 7; // Exclude headers
+    const remainingCells = 42 - totalCells - 7; // 6 weeks total
+    for (let day = 1; day <= remainingCells; day++) {
+        addCalendarDay(calendarGrid, day, year, month + 1, true);
+    }
+}
+
+function addCalendarDay(grid, day, year, month, isOtherMonth) {
+    const date = new Date(year, month, day);
+    const dateKey = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const today = new Date();
+    const isToday = date.toDateString() === today.toDateString();
+    
+    const assignments = assignmentDates[dateKey] || [];
+    const hasAssignments = assignments.length > 0;
+    
+    const dayDiv = document.createElement('div');
+    dayDiv.className = 'calendar-day';
+    if (isOtherMonth) dayDiv.classList.add('other-month');
+    if (isToday) dayDiv.classList.add('today');
+    if (hasAssignments) dayDiv.classList.add('has-assignment');
+    
+    dayDiv.innerHTML = `
+        <div class="calendar-day-number">${day}</div>
+        ${hasAssignments ? `<div class="calendar-day-count">${assignments.length}</div>` : ''}
+        ${hasAssignments ? `
+            <div class="calendar-day-tooltip">
+                ${assignments.map(a => escapeHtml(a.title)).join('<br>')}
+            </div>
+        ` : ''}
+    `;
+    
+    if (hasAssignments) {
+        dayDiv.onclick = () => showAssignmentsForDate(date, assignments);
+    }
+    
+    grid.appendChild(dayDiv);
+}
+
+function showAssignmentsForDate(date, assignments) {
+    const dateStr = date.toLocaleDateString('en-US', { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+    });
+    
+    const assignmentList = assignments.map(a => 
+        `• ${escapeHtml(a.title)} (${escapeHtml(a.project_name)})`
+    ).join('\n');
+    
+    alert(`Assignments due on ${dateStr}:\n\n${assignmentList}`);
+}
+
+function previousMonth() {
+    currentCalendarDate.setMonth(currentCalendarDate.getMonth() - 1);
+    renderCalendar();
+}
+
+function nextMonth() {
+    currentCalendarDate.setMonth(currentCalendarDate.getMonth() + 1);
+    renderCalendar();
+}
+
+// Helper function to get relative time
+function getTimeAgo(date) {
+    const seconds = Math.floor((new Date() - date) / 1000);
+    
+    const intervals = {
+        year: 31536000,
+        month: 2592000,
+        week: 604800,
+        day: 86400,
+        hour: 3600,
+        minute: 60
+    };
+    
+    for (const [name, secondsInInterval] of Object.entries(intervals)) {
+        const interval = Math.floor(seconds / secondsInInterval);
+        if (interval >= 1) {
+            return `${interval} ${name}${interval > 1 ? 's' : ''} ago`;
+        }
+    }
+    
+    return 'Just now';
+}
+
+// Helper function to escape HTML
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Update loadDashboard to include new features
+const originalLoadDashboard = loadDashboard;
+loadDashboard = async function() {
+    await originalLoadDashboard();
+    loadUserStories();
+    if (currentUser && currentUser.role === 'student') {
+        loadAssignmentCalendar();
+    }
+};
