@@ -86,8 +86,10 @@
                         <!-- Student-specific fields -->
                         <div id="student-fields" style="display: none;">
                             <div class="form-group">
-                                <label for="crn">CRN</label>
-                                <input type="text" id="crn">
+                                <label for="crn">CRN (Course Reference Number)</label>
+                                <select id="crn">
+                                    <option value="">Select a CRN</option>
+                                </select>
                             </div>
                         </div>
 
@@ -132,6 +134,32 @@
                     <div class="welcome-section">
                         <h1>Welcome, <span id="welcome-name"></span>!</h1>
                         <p>Manage your capstone projects and collaborate with your team</p>
+                    </div>
+
+                    <!-- User Stories / Announcements Section -->
+                    <div class="announcements-section">
+                        <div class="section-header">
+                            <h2>📢 Announcements & Updates</h2>
+                            <button class="btn btn-primary btn-sm" onclick="showCreateUserStory()">+ New Announcement</button>
+                        </div>
+                        <div id="user-stories-list" class="user-stories-container"></div>
+                    </div>
+
+                    <!-- Calendar Section (Students Only) -->
+                    <div class="calendar-section student-only">
+                        <h2>📅 Assignment Calendar</h2>
+                        <div id="calendar-container">
+                            <div class="calendar-header">
+                                <button class="btn btn-sm" onclick="previousMonth()">←</button>
+                                <h3 id="calendar-month-year"></h3>
+                                <button class="btn btn-sm" onclick="nextMonth()">→</button>
+                            </div>
+                            <div id="calendar-grid" class="calendar-grid"></div>
+                            <div class="calendar-legend">
+                                <span class="legend-item"><span class="legend-dot red"></span> Assignment Due</span>
+                                <span class="legend-item"><span class="legend-dot blue"></span> Today</span>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="stats-grid">
@@ -223,6 +251,29 @@
                             </div>
                             <button type="submit" class="btn btn-primary">Update Profile</button>
                         </form>
+                    </div>
+
+                    <!-- CRN Management Section (Faculty Only) -->
+                    <div class="profile-card faculty-only" style="margin-top: 2rem;">
+                        <h2>CRN Management</h2>
+                        <p>Create and manage Course Reference Numbers for your classes</p>
+                        
+                        <div class="crn-create-form">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="new-crn-code">CRN Code</label>
+                                    <input type="text" id="new-crn-code" placeholder="e.g., 12345">
+                                </div>
+                                <div class="form-group">
+                                    <label for="new-course-name">Course Name</label>
+                                    <input type="text" id="new-course-name" placeholder="e.g., CS 4800 - Software Engineering">
+                                </div>
+                            </div>
+                            <button type="button" class="btn btn-primary" onclick="createCRN()">Create CRN</button>
+                        </div>
+
+                        <h3 style="margin-top: 2rem;">Your CRNs</h3>
+                        <div id="crn-list" class="crn-list"></div>
                     </div>
                 </div>
             </div>
@@ -353,6 +404,51 @@
                         <input type="datetime-local" id="new-milestone-due" required>
                     </div>
                     <button type="submit" class="btn btn-primary">Create Milestone</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Create User Story / Announcement Modal -->
+        <div id="create-userstory-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Create Announcement</h2>
+                <form id="create-userstory-form">
+                    <div class="form-group">
+                        <label for="new-story-project">Audience</label>
+                        <select id="new-story-project">
+                            <option value="">Select a project</option>
+                        </select>
+                        <small class="student-only">Select which project team should see this announcement</small>
+                        <small class="faculty-only">Leave blank to send to all students in your CRN, or select a specific project</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-story-title">Title</label>
+                        <input type="text" id="new-story-title" required placeholder="Enter announcement title">
+                    </div>
+                    <div class="form-group">
+                        <label for="new-story-content">Content</label>
+                        <textarea id="new-story-content" rows="6" required placeholder="Write your announcement here..."></textarea>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="new-story-type">Type</label>
+                            <select id="new-story-type">
+                                <option value="announcement">Announcement</option>
+                                <option value="update">Update</option>
+                                <option value="milestone">Milestone</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="new-story-priority">Priority</label>
+                            <select id="new-story-priority">
+                                <option value="normal">Normal</option>
+                                <option value="high">High</option>
+                                <option value="low">Low</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Post Announcement</button>
                 </form>
             </div>
         </div>
