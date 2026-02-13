@@ -7,6 +7,7 @@ let currentProject = null;
 let projects = [];
 let students = [];
 let currentPage = 1;
+let userProjectId = null;  // Track which project the user is in
 const PROJECTS_PER_PAGE = 6;
 
 // Initialize App
@@ -194,6 +195,7 @@ function showDashboard() {
     loadProjects();
     loadStudents();
     loadUserProfile();
+    checkUserProjectMembership();  // Check which project user is in
     showView('overview');
 }
 
@@ -344,6 +346,26 @@ function previousPage() {
 
 function searchProjects(keyword) {
     loadProjects(keyword);
+}
+
+async function checkUserProjectMembership() {
+    try {
+        const response = await fetch(`${API_URL}/projects`, {
+            credentials: 'include'
+        });
+        
+        const allProjects = await response.json();
+        
+        // Find project the user is in (if student)
+        if (currentUser.role === 'student') {
+            const userProject = allProjects.find(p => 
+                p.team_members && p.team_members.some(m => m.id === currentUser.id)
+            );
+            userProjectId = userProject ? userProject.id : null;
+        }
+    } catch (error) {
+        console.error('Error checking project membership:', error);
+    }
 }
 
 async function loadMyProjects() {
@@ -541,10 +563,19 @@ async function openProjectModal(projectId) {
         
         // Update join/leave buttons
         const isMember = currentProject.team_members.some(m => m.id === currentUser.id);
+        const isInAnotherProject = userProjectId && userProjectId !== currentProject.id;
+        
+        // Show join button only if: student, not member, project not full, and not in another project
         document.getElementById('join-project-btn').style.display = 
-            (currentUser.role === 'student' && !isMember && currentProject.status !== 'full') ? '' : 'none';
+            (currentUser.role === 'student' && !isMember && currentProject.status !== 'full' && !isInAnotherProject) ? 'inline-block' : 'none';
         document.getElementById('leave-project-btn').style.display = 
-            (currentUser.role === 'student' && isMember) ? '' : 'none';
+            (currentUser.role === 'student' && isMember) ? 'inline-block' : 'none';
+        
+        // Show message if student is in another project
+        const joinBtn = document.getElementById('join-project-btn');
+        if (isInAnotherProject && joinBtn) {
+            joinBtn.title = 'You are already in a project and cannot join another';
+        }
         
         // Load team members
         displayTeamMembers(currentProject.team_members);
@@ -582,6 +613,12 @@ function displayTeamMembers(members) {
 }
 
 async function joinProject() {
+    // Check if already in a project
+    if (userProjectId) {
+        alert('You are already in a project. You cannot join another project.');
+        return;
+    }
+    
     try {
         const response = await fetch(`${API_URL}/projects/${currentProject.id}/join`, {
             method: 'POST',
@@ -592,8 +629,10 @@ async function joinProject() {
         
         if (response.ok) {
             alert('Successfully joined project!');
+            userProjectId = currentProject.id;  // Update tracking
             openProjectModal(currentProject.id);
             loadProjects();
+            loadMyProjects();  // Refresh my projects
         } else {
             alert(data.error || 'Failed to join project');
         }
@@ -616,8 +655,10 @@ async function leaveProject() {
         
         if (response.ok) {
             alert('Successfully left project');
+            userProjectId = null;  // Clear tracking
             document.getElementById('project-modal').classList.remove('active');
             loadProjects();
+            loadMyProjects();  // Refresh my projects
         } else {
             alert(data.error || 'Failed to leave project');
         }
