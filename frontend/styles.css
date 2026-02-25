@@ -1288,3 +1288,102 @@ small {
     color: var(--text-secondary);
     font-size: 0.875rem;
 }
+
+/* Class Information Styles */
+.class-info-card {
+    background: linear-gradient(135deg, var(--primary-color) 0%, #5b21b6 100%);
+    color: white;
+    padding: 2rem;
+    border-radius: 12px;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 12px rgba(67, 56, 202, 0.2);
+}
+
+.class-info-card h2 {
+    margin: 0 0 1.5rem 0;
+    font-size: 1.5rem;
+}
+
+.class-info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1.5rem;
+}
+
+.class-info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.class-info-item label {
+    font-size: 0.875rem;
+    opacity: 0.9;
+    font-weight: 500;
+}
+
+.class-info-item span {
+    font-size: 1.125rem;
+    font-weight: 600;
+}
+
+.crn-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    align-items: flex-end;
+}
+
+.crn-stats span {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+}
+
+/* Faculty Card Styles */
+.faculty-card {
+    background: var(--card-bg);
+    padding: 1.5rem;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    transition: all 0.3s ease;
+}
+
+.faculty-card:hover {
+    border-color: var(--primary-color);
+    box-shadow: 0 4px 12px rgba(67, 56, 202, 0.1);
+    transform: translateY(-2px);
+}
+
+.faculty-card h3 {
+    margin: 0 0 0.5rem 0;
+    color: var(--text-primary);
+}
+
+.faculty-email {
+    color: var(--primary-color);
+    font-size: 0.9rem;
+    margin: 0.5rem 0;
+}
+
+.faculty-meta {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.faculty-meta span {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+}
+
+.faculty-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.5rem;
+}

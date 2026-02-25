@@ -241,9 +241,12 @@ function showView(viewName) {
         loadProjects();
     } else if (viewName === 'students') {
         loadStudents();
+    } else if (viewName === 'faculty') {
+        loadFaculty();
     } else if (viewName === 'overview') {
         loadMyProjects();
-        loadUserStories();  // Load announcements in overview
+        loadUserStories();
+        loadClassInfo();
     }
 }
 
@@ -462,12 +465,27 @@ async function loadUserProfile() {
         document.getElementById('profile-skills').value = profile.skills || '';
         document.getElementById('profile-interests').value = profile.interests || '';
         
-        // Display CRNs for faculty
-        if (currentUser.role === 'faculty' && profile.crns_created) {
-            displayCRNs(profile.crns_created);
+        // Display classes for faculty with detailed stats
+        if (currentUser.role === 'faculty') {
+            loadMyClasses();
         }
     } catch (error) {
         console.error('Error loading profile:', error);
+    }
+}
+
+async function loadMyClasses() {
+    try {
+        const response = await fetch(`${API_URL}/my-classes`, {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const classes = await response.json();
+            displayCRNs(classes);
+        }
+    } catch (error) {
+        console.error('Error loading classes:', error);
     }
 }
 
@@ -1165,26 +1183,32 @@ function displayCRNs(crns) {
     if (!container) return;  // Faculty profile may not have this element
     
     if (!crns || crns.length === 0) {
-        container.innerHTML = '<div class="empty-state"><p>No CRNs created yet.</p></div>';
+        container.innerHTML = '<div class="empty-state"><p>No classes created yet.</p></div>';
         return;
     }
     
-    container.innerHTML = crns.map(crn => `
-        <div class="crn-card">
-            <div class="crn-header">
-                <div>
-                    <h4>${crn.crn_code}</h4>
-                    <p>${crn.course_name}</p>
+    container.innerHTML = crns.map(crn => {
+        const isOwner = currentUser && currentUser.id === crn.faculty_id;
+        return `
+            <div class="crn-card">
+                <div class="crn-header">
+                    <div>
+                        <h4>${crn.crn_code}</h4>
+                        <p>${crn.course_name}</p>
+                    </div>
+                    <div class="crn-stats">
+                        ${crn.student_count !== undefined ? `<span>${crn.student_count} students</span>` : ''}
+                        ${crn.project_count !== undefined ? `<span>${crn.project_count} projects</span>` : ''}
+                    </div>
                 </div>
-                <span class="crn-faculty">Faculty: ${crn.faculty_name}</span>
+                ${isOwner ? `
+                    <div class="crn-actions">
+                        <button onclick="deleteCRN(${crn.id})" class="btn btn-sm btn-danger">Delete Class</button>
+                    </div>
+                ` : ''}
             </div>
-            ${currentUser && currentUser.id === crn.faculty_id ? `
-                <div class="crn-actions">
-                    <button onclick="deleteCRN(${crn.id})" class="btn-danger">Delete</button>
-                </div>
-            ` : ''}
-        </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function populateRegistrationCRNs(crns) {
@@ -1221,22 +1245,23 @@ async function createCRN() {
         });
         
         if (response.ok) {
-            alert('CRN created successfully!');
+            alert('Class created successfully!');
             document.getElementById('new-crn-code').value = '';
             document.getElementById('new-course-name').value = '';
-            loadUserProfile();  // Reload profile to show new CRN
+            loadMyClasses();  // Reload classes with stats
+            loadClassInfo();  // Update class info on dashboard
         } else {
             const error = await response.json();
-            alert('Failed to create CRN: ' + (error.error || 'Unknown error'));
+            alert('Failed to create class: ' + (error.error || 'Unknown error'));
         }
     } catch (error) {
-        console.error('Error creating CRN:', error);
+        console.error('Error creating class:', error);
         alert('An error occurred');
     }
 }
 
 async function deleteCRN(crnId) {
-    if (!confirm('Are you sure you want to delete this CRN? Students using this CRN will be affected.')) {
+    if (!confirm('Are you sure you want to delete this class? This action cannot be undone.')) {
         return;
     }
     
@@ -1247,14 +1272,15 @@ async function deleteCRN(crnId) {
         });
         
         if (response.ok) {
-            alert('CRN deleted successfully');
-            loadUserProfile();
+            alert('Class deleted successfully');
+            loadMyClasses();
+            loadClassInfo();
         } else {
             const error = await response.json();
-            alert('Failed to delete CRN: ' + (error.error || 'Unknown error'));
+            alert('Failed to delete class: ' + (error.error || 'Unknown error'));
         }
     } catch (error) {
-        console.error('Error deleting CRN:', error);
+        console.error('Error deleting class:', error);
         alert('An error occurred');
     }
 }
@@ -1432,6 +1458,143 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// ==========================================
+// CLASS MANAGEMENT FUNCTIONS
+// ==========================================
+
+function showCreateClass() {
+    const modal = document.getElementById('create-class-modal');
+    const closeBtn = modal.querySelector('.close');
+    
+    closeBtn.onclick = () => {
+        modal.classList.remove('active');
+    };
+    
+    modal.classList.add('active');
+}
+
+// Create class form submission
+document.getElementById('create-class-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const classData = {
+        crn_code: document.getElementById('new-class-crn').value,
+        course_name: document.getElementById('new-class-name').value
+    };
+    
+    try {
+        const response = await fetch(`${API_URL}/crns`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify(classData)
+        });
+        
+        if (response.ok) {
+            alert('Class created successfully!');
+            document.getElementById('create-class-modal').classList.remove('active');
+            document.getElementById('create-class-form').reset();
+            loadClassInfo();
+            loadUserProfile(); // Reload profile to show new class
+        } else {
+            const error = await response.json();
+            alert('Failed to create class: ' + (error.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error creating class:', error);
+        alert('An error occurred');
+    }
+});
+
+async function loadClassInfo() {
+    try {
+        const response = await fetch(`${API_URL}/class-info`, {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const classInfo = await response.json();
+            displayClassInfo(classInfo);
+        } else {
+            document.getElementById('class-info-content').innerHTML = 
+                '<p>No class information available</p>';
+        }
+    } catch (error) {
+        console.error('Error loading class info:', error);
+        document.getElementById('class-info-content').innerHTML = 
+            '<p>Error loading class information</p>';
+    }
+}
+
+function displayClassInfo(classInfo) {
+    const container = document.getElementById('class-info-content');
+    
+    container.innerHTML = `
+        <div class="class-info-grid">
+            <div class="class-info-item">
+                <label>Class Code:</label>
+                <span>${escapeHtml(classInfo.crn_code)}</span>
+            </div>
+            <div class="class-info-item">
+                <label>Course Name:</label>
+                <span>${escapeHtml(classInfo.course_name)}</span>
+            </div>
+            <div class="class-info-item">
+                <label>Instructor:</label>
+                <span>${escapeHtml(classInfo.faculty_name)}</span>
+            </div>
+            <div class="class-info-item">
+                <label>Students Enrolled:</label>
+                <span>${classInfo.student_count}</span>
+            </div>
+            <div class="class-info-item">
+                <label>Faculty Members:</label>
+                <span>${classInfo.faculty_count}</span>
+            </div>
+            <div class="class-info-item">
+                <label>Active Projects:</label>
+                <span>${classInfo.project_count}</span>
+            </div>
+        </div>
+    `;
+}
+
+async function loadFaculty() {
+    try {
+        const response = await fetch(`${API_URL}/faculty`, {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const faculty = await response.json();
+            displayFaculty(faculty);
+        }
+    } catch (error) {
+        console.error('Error loading faculty:', error);
+    }
+}
+
+function displayFaculty(facultyList) {
+    const grid = document.getElementById('faculty-grid');
+    
+    if (facultyList.length === 0) {
+        grid.innerHTML = '<div class="empty-state"><h3>No faculty members found</h3><p>No faculty in your class yet</p></div>';
+        return;
+    }
+    
+    grid.innerHTML = facultyList.map(faculty => `
+        <div class="faculty-card">
+            <h3>${faculty.title ? faculty.title + ' ' : ''}${faculty.name}</h3>
+            <p class="faculty-email">${faculty.email}</p>
+            <div class="faculty-meta">
+                <span>Faculty Member</span>
+            </div>
+        </div>
+    `).join('');
 }
 
 // Update loadDashboard to include new features

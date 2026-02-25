@@ -143,6 +143,17 @@ def create_projects():
         print("Failed to login as faculty")
         return []
     
+    # Create the class if it doesn't exist
+    print("\nEnsuring class exists...")
+    crn_response = faculty_session.post(f'{API_URL}/crns', json={
+        "crn_code": "12345",
+        "course_name": "CSC4351 - Capstone I"
+    })
+    if crn_response.status_code == 201:
+        print("✓ Created class: CSC4351 - Capstone I (CRN: 12345)")
+    elif crn_response.status_code == 400:
+        print("✓ Class already exists: CSC4351 - Capstone I (CRN: 12345)")
+    
     projects = [
         {
             "name": "AI-Powered Healthcare Assistant",

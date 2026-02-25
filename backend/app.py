@@ -226,12 +226,17 @@ def projects():
     if request.method == 'GET':
         keyword = request.args.get('keyword', '')
         
+        # Filter projects by CRN - only show projects from faculty in the same class
+        base_query = Project.query.join(User, Project.creator_id == User.id).filter(
+            User.crn == current_user.crn
+        )
+        
         if keyword:
-            projects_list = Project.query.filter(
+            projects_list = base_query.filter(
                 (Project.name.contains(keyword)) | (Project.description.contains(keyword))
             ).all()
         else:
-            projects_list = Project.query.all()
+            projects_list = base_query.all()
         
         return jsonify([{
             'id': p.id,
@@ -521,7 +526,8 @@ def project_milestones(project_id):
 def get_students():
     keyword = request.args.get('keyword', '')
     
-    query = User.query.filter_by(role='student')
+    # Filter students by CRN - only show students in the same class
+    query = User.query.filter_by(role='student', crn=current_user.crn)
     
     if keyword:
         query = query.filter(
@@ -539,10 +545,56 @@ def get_students():
         'username': s.username,
         'first_name': s.first_name,
         'last_name': s.last_name,
+        'name': f"{s.first_name} {s.last_name}",
         'skills': s.skills,
         'interests': s.interests,
         'biography': s.biography
     } for s in students]), 200
+
+@app.route('/api/faculty', methods=['GET'])
+@login_required
+def get_faculty():
+    """Get all faculty members in the same CRN"""
+    faculty_members = User.query.filter_by(role='faculty', crn=current_user.crn).all()
+    
+    return jsonify([{
+        'id': f.id,
+        'username': f.username,
+        'first_name': f.first_name,
+        'last_name': f.last_name,
+        'name': f"{f.first_name} {f.last_name}",
+        'title': f.title,
+        'email': f.email
+    } for f in faculty_members]), 200
+
+@app.route('/api/class-info', methods=['GET'])
+@login_required
+def get_class_info():
+    """Get information about the current user's class"""
+    if not current_user.crn:
+        return jsonify({'error': 'No class assigned'}), 404
+    
+    # Get the CRN details
+    crn = CRN.query.filter_by(crn_code=current_user.crn).first()
+    
+    if not crn:
+        return jsonify({'error': 'Class not found'}), 404
+    
+    # Count students and faculty in this class
+    student_count = User.query.filter_by(role='student', crn=current_user.crn).count()
+    faculty_count = User.query.filter_by(role='faculty', crn=current_user.crn).count()
+    project_count = Project.query.join(User, Project.creator_id == User.id).filter(
+        User.crn == current_user.crn
+    ).count()
+    
+    return jsonify({
+        'crn_code': crn.crn_code,
+        'course_name': crn.course_name,
+        'faculty_name': f"{crn.faculty.first_name} {crn.faculty.last_name}",
+        'student_count': student_count,
+        'faculty_count': faculty_count,
+        'project_count': project_count
+    }), 200
 
 # User Stories / Announcements
 @app.route('/api/user-stories', methods=['GET', 'POST'])
@@ -550,11 +602,11 @@ def get_students():
 def user_stories():
     """Get all user stories or create a new one"""
     if request.method == 'GET':
-        # Get all stories that the current user should see
+        # Get all stories that the current user should see (filtered by CRN)
         if current_user.role == 'faculty':
-            # Faculty sees all announcements from students in their CRN
+            # Faculty sees all announcements from students and faculty in their CRN
             stories = UserStory.query.join(User, UserStory.author_id == User.id).filter(
-                (User.crn == current_user.crn) | (UserStory.author_id == current_user.id)
+                User.crn == current_user.crn
             ).order_by(UserStory.created_at.desc()).all()
         else:
             # Students see:
@@ -572,9 +624,10 @@ def user_stories():
                 UserStory.project_id.is_(None)
             ).all()
             
-            # Get stories from project teammates
-            project_stories = UserStory.query.filter(
-                UserStory.project_id.in_(user_project_ids)
+            # Get stories from project teammates (only from same CRN)
+            project_stories = UserStory.query.join(User, UserStory.author_id == User.id).filter(
+                UserStory.project_id.in_(user_project_ids),
+                User.crn == current_user.crn
             ).all() if user_project_ids else []
             
             # Combine and remove duplicates
@@ -693,17 +746,17 @@ def manage_crns():
             return jsonify({'error': 'Authentication required'}), 401
         
         if current_user.role != 'faculty':
-            return jsonify({'error': 'Only faculty can create CRNs'}), 403
+            return jsonify({'error': 'Only faculty can create classes'}), 403
         
         data = request.json
         
         if not data.get('crn_code') or not data.get('course_name'):
-            return jsonify({'error': 'CRN code and course name are required'}), 400
+            return jsonify({'error': 'Class code and course name are required'}), 400
         
         # Check if CRN already exists
         existing_crn = CRN.query.filter_by(crn_code=data['crn_code']).first()
         if existing_crn:
-            return jsonify({'error': 'CRN already exists'}), 400
+            return jsonify({'error': 'Class code already exists'}), 400
         
         crn = CRN(
             crn_code=data['crn_code'],
@@ -711,16 +764,16 @@ def manage_crns():
             faculty_id=current_user.id
         )
         
-        # Update faculty's CRN if not set
-        if not current_user.crn:
-            current_user.crn = data['crn_code']
+        # Assign faculty to this class
+        current_user.crn = data['crn_code']
         
         db.session.add(crn)
         db.session.commit()
         
         return jsonify({
-            'message': 'CRN created successfully',
+            'message': 'Class created successfully',
             'crn_id': crn.id
+        }), 201d
         }), 201
 
 @app.route('/api/crns/<int:crn_id>', methods=['DELETE'])
@@ -734,14 +787,45 @@ def delete_crn(crn_id):
         return jsonify({'error': 'Unauthorized'}), 403
     
     # Check if any students are using this CRN
-    students_with_crn = User.query.filter_by(crn=crn.crn_code).count()
-    if students_with_crn > 1:  # More than just the faculty member
-        return jsonify({'error': 'Cannot delete CRN with active students'}), 400
+    students_with_crn = User.query.filter_by(crn=crn.crn_code, role='student').count()
+    if students_with_crn > 0:
+        return jsonify({'error': 'Cannot delete class with enrolled students'}), 400
     
     db.session.delete(crn)
     db.session.commit()
     
-    return jsonify({'message': 'CRN deleted successfully'}), 200
+    return jsonify({'message': 'Class deleted successfully'}), 200
+
+@app.route('/api/my-classes', methods=['GET'])
+@login_required
+def get_my_classes():
+    """Get all classes for the current faculty member"""
+    if current_user.role != 'faculty':
+        return jsonify({'error': 'Only faculty can view their classes'}), 403
+    
+    # Get all classes created by this faculty
+    classes = CRN.query.filter_by(faculty_id=current_user.id).all()
+    
+    result = []
+    for cls in classes:
+        # Count students in this class
+        student_count = User.query.filter_by(role='student', crn=cls.crn_code).count()
+        
+        # Count projects in this class
+        project_count = Project.query.join(User, Project.creator_id == User.id).filter(
+            User.crn == cls.crn_code
+        ).count()
+        
+        result.append({
+            'id': cls.id,
+            'crn_code': cls.crn_code,
+            'course_name': cls.course_name,
+            'student_count': student_count,
+            'project_count': project_count,
+            'created_at': cls.created_at.isoformat()
+        })
+    
+    return jsonify(result), 200
 
 # Assignment Calendar
 @app.route('/api/calendar/assignments', methods=['GET'])

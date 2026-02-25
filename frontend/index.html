@@ -86,10 +86,11 @@
                         <!-- Student-specific fields -->
                         <div id="student-fields" style="display: none;">
                             <div class="form-group">
-                                <label for="crn">CRN (Course Reference Number)</label>
+                                <label for="crn">Select Your Class</label>
                                 <select id="crn">
-                                    <option value="">Select a CRN</option>
+                                    <option value="">Select a class</option>
                                 </select>
+                                <small>Choose the class you're enrolled in</small>
                             </div>
                         </div>
 
@@ -119,7 +120,8 @@
                 <div class="nav-menu">
                     <a href="#" class="nav-link active" data-view="overview">Dashboard</a>
                     <a href="#" class="nav-link" data-view="projects">Projects</a>
-                    <a href="#" class="nav-link" data-view="students">Find Students</a>
+                    <a href="#" class="nav-link" data-view="students">Students</a>
+                    <a href="#" class="nav-link" data-view="faculty">Faculty</a>
                     <a href="#" class="nav-link" data-view="profile">Profile</a>
                 </div>
                 <div class="nav-user">
@@ -134,6 +136,12 @@
                     <div class="welcome-section">
                         <h1>Welcome, <span id="welcome-name"></span>!</h1>
                         <p>Manage your capstone projects and collaborate with your team</p>
+                    </div>
+
+                    <!-- Class Information Card -->
+                    <div class="class-info-card">
+                        <h2>📚 My Class</h2>
+                        <div id="class-info-content" class="class-info-content"></div>
                     </div>
 
                     <!-- User Stories / Announcements Section -->
@@ -183,6 +191,7 @@
                             <button class="btn btn-primary" onclick="showView('projects')">Browse Projects</button>
                             <button class="btn btn-primary" onclick="showView('students')">Find Teammates</button>
                             <button class="btn btn-primary faculty-only" onclick="showCreateProject()">Create Project</button>
+                            <button class="btn btn-primary faculty-only" onclick="showCreateClass()">Create Class</button>
                         </div>
                     </div>
 
@@ -221,6 +230,16 @@
                     <div id="students-grid" class="students-grid"></div>
                 </div>
 
+                <!-- Faculty View -->
+                <div id="faculty-view" class="dashboard-view">
+                    <div class="view-header">
+                        <h1>Faculty Members</h1>
+                        <p>Professors and instructors in your class</p>
+                    </div>
+
+                    <div id="faculty-grid" class="faculty-grid"></div>
+                </div>
+
                 <!-- Profile View -->
                 <div id="profile-view" class="dashboard-view">
                     <div class="view-header">
@@ -255,13 +274,13 @@
 
                     <!-- CRN Management Section (Faculty Only) -->
                     <div class="profile-card faculty-only" style="margin-top: 2rem;">
-                        <h2>CRN Management</h2>
-                        <p>Create and manage Course Reference Numbers for your classes</p>
+                        <h2>Class Management</h2>
+                        <p>Create and manage classes for your courses</p>
                         
                         <div class="crn-create-form">
                             <div class="form-row">
                                 <div class="form-group">
-                                    <label for="new-crn-code">CRN Code</label>
+                                    <label for="new-crn-code">Class Code (CRN)</label>
                                     <input type="text" id="new-crn-code" placeholder="e.g., 12345">
                                 </div>
                                 <div class="form-group">
@@ -269,10 +288,10 @@
                                     <input type="text" id="new-course-name" placeholder="e.g., CS 4800 - Software Engineering">
                                 </div>
                             </div>
-                            <button type="button" class="btn btn-primary" onclick="createCRN()">Create CRN</button>
+                            <button type="button" class="btn btn-primary" onclick="createCRN()">Create Class</button>
                         </div>
 
-                        <h3 style="margin-top: 2rem;">Your CRNs</h3>
+                        <h3 style="margin-top: 2rem;">Your Classes</h3>
                         <div id="crn-list" class="crn-list"></div>
                     </div>
                 </div>
@@ -420,7 +439,7 @@
                             <option value="">Select a project</option>
                         </select>
                         <small class="student-only">Select which project team should see this announcement</small>
-                        <small class="faculty-only">Leave blank to send to all students in your CRN, or select a specific project</small>
+                        <small class="faculty-only">Leave blank to send to all students in your class, or select a specific project</small>
                     </div>
                     <div class="form-group">
                         <label for="new-story-title">Title</label>
@@ -449,6 +468,27 @@
                         </div>
                     </div>
                     <button type="submit" class="btn btn-primary">Post Announcement</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Create Class Modal -->
+        <div id="create-class-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Create New Class</h2>
+                <form id="create-class-form">
+                    <div class="form-group">
+                        <label for="new-class-crn">Class Code (CRN)</label>
+                        <input type="text" id="new-class-crn" required placeholder="e.g., 12345">
+                        <small>A unique identifier for your class</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-class-name">Class Name</label>
+                        <input type="text" id="new-class-name" required placeholder="e.g., CS 4800 - Software Engineering">
+                        <small>The full name of your course</small>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Create Class</button>
                 </form>
             </div>
         </div>
