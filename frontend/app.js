@@ -31,17 +31,10 @@ function initializeEventListeners() {
 
     // Role-based fields
     document.getElementById('role').addEventListener('change', (e) => {
-        const studentFields = document.getElementById('student-fields');
         const facultyFields = document.getElementById('faculty-fields');
-        
-        if (e.target.value === 'student') {
-            studentFields.style.display = 'block';
-            facultyFields.style.display = 'none';
-        } else if (e.target.value === 'faculty') {
-            studentFields.style.display = 'none';
+        if (e.target.value === 'faculty') {
             facultyFields.style.display = 'block';
         } else {
-            studentFields.style.display = 'none';
             facultyFields.style.display = 'none';
         }
     });
@@ -126,9 +119,7 @@ async function handleRegister(e) {
         role: document.getElementById('role').value,
     };
     
-    if (formData.role === 'student') {
-        formData.crn = document.getElementById('crn').value;
-    } else if (formData.role === 'faculty') {
+    if (formData.role === 'faculty') {
         formData.title = document.getElementById('title').value;
     }
     
@@ -215,7 +206,10 @@ function updateRoleVisibility() {
                 el.style.display = 'none';
             }
         });
-        facultyElements.forEach(el => el.style.display = '');
+        facultyElements.forEach(el => {
+            // Use inline-flex for buttons so they render correctly in flex containers
+            el.style.display = el.tagName === 'BUTTON' ? 'inline-flex' : 'block';
+        });
     } else {
         // Students: Show student items, hide faculty items
         studentElements.forEach(el => {
@@ -1223,41 +1217,8 @@ function populateRegistrationCRNs(crns) {
 }
 
 async function createCRN() {
-    const crnCode = document.getElementById('new-crn-code').value;
-    const courseName = document.getElementById('new-course-name').value;
-    
-    if (!crnCode || !courseName) {
-        alert('Please fill in all fields');
-        return;
-    }
-    
-    try {
-        const response = await fetch(`${API_URL}/crns`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            credentials: 'include',
-            body: JSON.stringify({
-                crn_code: crnCode,
-                course_name: courseName
-            })
-        });
-        
-        if (response.ok) {
-            alert('Class created successfully!');
-            document.getElementById('new-crn-code').value = '';
-            document.getElementById('new-course-name').value = '';
-            loadMyClasses();  // Reload classes with stats
-            loadClassInfo();  // Update class info on dashboard
-        } else {
-            const error = await response.json();
-            alert('Failed to create class: ' + (error.error || 'Unknown error'));
-        }
-    } catch (error) {
-        console.error('Error creating class:', error);
-        alert('An error occurred');
-    }
+    // Inline form removed — delegate to the full Create Class modal
+    showCreateClass();
 }
 
 async function deleteCRN(crnId) {
@@ -1464,6 +1425,30 @@ function escapeHtml(text) {
 // CLASS MANAGEMENT FUNCTIONS
 // ==========================================
 
+function showCreateClassError(msg) {
+    let el = document.getElementById('create-class-feedback');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'create-class-feedback';
+        document.getElementById('create-class-form').prepend(el);
+    }
+    el.className = 'create-class-feedback create-class-feedback--error';
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
+function showCreateClassSuccess(msg) {
+    let el = document.getElementById('create-class-feedback');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'create-class-feedback';
+        document.getElementById('create-class-form').prepend(el);
+    }
+    el.className = 'create-class-feedback create-class-feedback--success';
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
 function showCreateClass() {
     const modal = document.getElementById('create-class-modal');
     const closeBtn = modal.querySelector('.close');
@@ -1473,40 +1458,74 @@ function showCreateClass() {
     };
     
     modal.classList.add('active');
+
+    // Clear any previous feedback
+    const fb = document.getElementById('create-class-feedback');
+    if (fb) fb.style.display = 'none';
 }
+
+// Create class — cancel button
+document.getElementById('cancel-create-class').addEventListener('click', () => {
+    document.getElementById('create-class-modal').classList.remove('active');
+    document.getElementById('create-class-form').reset();
+});
 
 // Create class form submission
 document.getElementById('create-class-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    
+
+    const crn     = document.getElementById('new-class-crn').value.trim();
+    const name    = document.getElementById('new-class-name').value.trim();
+    const semester = document.getElementById('new-class-semester').value;
+
+    if (!crn || !name || !semester) {
+        showCreateClassError('Please fill in all required fields (CRN, Course Name, Semester).');
+        return;
+    }
+
     const classData = {
-        crn_code: document.getElementById('new-class-crn').value,
-        course_name: document.getElementById('new-class-name').value
+        crn_code:    crn,
+        course_name: name,
+        section:     document.getElementById('new-class-section').value.trim() || null,
+        description: document.getElementById('new-class-description').value.trim() || null,
+        semester:    semester,
+        capacity:    document.getElementById('new-class-capacity').value ? parseInt(document.getElementById('new-class-capacity').value) : null,
+        start_date:  document.getElementById('new-class-start').value || null,
+        end_date:    document.getElementById('new-class-end').value || null,
+        meeting_days: document.getElementById('new-class-days').value || null,
+        location:    document.getElementById('new-class-location').value.trim() || null,
     };
-    
+
+    const submitBtn = document.getElementById('submit-create-class');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating…';
+
     try {
         const response = await fetch(`${API_URL}/crns`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify(classData)
         });
-        
+
         if (response.ok) {
-            alert('Class created successfully!');
-            document.getElementById('create-class-modal').classList.remove('active');
-            document.getElementById('create-class-form').reset();
-            loadClassInfo();
-            loadUserProfile(); // Reload profile to show new class
+            showCreateClassSuccess(`"${name}" was created successfully!`);
+            setTimeout(() => {
+                document.getElementById('create-class-modal').classList.remove('active');
+                document.getElementById('create-class-form').reset();
+                loadClassInfo();
+                loadUserProfile();
+            }, 1500);
         } else {
             const error = await response.json();
-            alert('Failed to create class: ' + (error.error || 'Unknown error'));
+            showCreateClassError('Failed to create class: ' + (error.error || 'Unknown error'));
         }
     } catch (error) {
         console.error('Error creating class:', error);
-        alert('An error occurred');
+        showCreateClassError('A network error occurred. Please try again.');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<span class="btn-icon">✚</span> Create Class';
     }
 });
 
@@ -1519,15 +1538,76 @@ async function loadClassInfo() {
         if (response.ok) {
             const classInfo = await response.json();
             displayClassInfo(classInfo);
+            // Student has a class — hide the join card
+            const joinCard = document.getElementById('join-class-card');
+            if (joinCard) joinCard.style.display = 'none';
         } else {
             document.getElementById('class-info-content').innerHTML = 
                 '<p>No class information available</p>';
+            // Show join card only for students without a class
+            if (currentUser && currentUser.role === 'student') {
+                const joinCard = document.getElementById('join-class-card');
+                if (joinCard) joinCard.style.display = 'block';
+            }
         }
     } catch (error) {
         console.error('Error loading class info:', error);
         document.getElementById('class-info-content').innerHTML = 
             '<p>Error loading class information</p>';
     }
+}
+
+async function joinClass() {
+    const input = document.getElementById('join-crn-input');
+    const feedback = document.getElementById('join-class-feedback');
+    const crn_code = input.value.trim();
+
+    if (!crn_code) {
+        showJoinFeedback('Please enter a CRN code.', 'error');
+        return;
+    }
+
+    const btn = document.querySelector('#join-class-card .btn-primary');
+    btn.disabled = true;
+    btn.textContent = 'Joining…';
+
+    try {
+        const response = await fetch(`${API_URL}/join-class`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ crn_code })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            showJoinFeedback(`✓ ${data.message}`, 'success');
+            input.value = '';
+            // Update stored user and refresh dashboard
+            currentUser.crn = data.crn_code;
+            localStorage.setItem('user', JSON.stringify(currentUser));
+            setTimeout(() => {
+                document.getElementById('join-class-card').style.display = 'none';
+                loadClassInfo();
+                loadProjects();
+            }, 1200);
+        } else {
+            showJoinFeedback(data.error || 'Failed to join class.', 'error');
+        }
+    } catch (error) {
+        showJoinFeedback('A network error occurred. Please try again.', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Join Class';
+    }
+}
+
+function showJoinFeedback(msg, type) {
+    const el = document.getElementById('join-class-feedback');
+    el.textContent = msg;
+    el.className = `join-class-feedback join-class-feedback--${type}`;
+    el.style.display = 'block';
 }
 
 function displayClassInfo(classInfo) {

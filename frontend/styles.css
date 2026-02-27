@@ -797,7 +797,7 @@ body {
 }
 
 .faculty-only {
-    display: none;
+    display: none; /* shown via JS for faculty role */
 }
 
 /* Animations */
@@ -1386,4 +1386,264 @@ small {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     gap: 1.5rem;
+}
+
+/* ── Create Class Modal ──────────────────────────────────── */
+.create-class-modal-content {
+    max-width: 680px;
+}
+
+.create-class-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 28px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.create-class-icon {
+    font-size: 2.4rem;
+    width: 56px;
+    height: 56px;
+    background: #eff6ff;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.create-class-header h2 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0 0 4px;
+}
+
+.create-class-subtitle {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.create-class-section {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 16px;
+}
+
+.create-class-section-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+}
+
+.create-class-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+@media (max-width: 500px) {
+    .create-class-grid { grid-template-columns: 1fr; }
+}
+
+.form-group textarea {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    background: var(--surface);
+    resize: vertical;
+    font-family: inherit;
+    transition: border-color 0.2s;
+}
+
+.form-group textarea:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.required {
+    color: var(--danger-color);
+}
+
+.create-class-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.btn-secondary {
+    background: var(--background);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.btn-secondary:hover {
+    background: var(--border);
+    border-color: var(--secondary-color);
+}
+
+.btn-icon {
+    margin-right: 6px;
+    font-size: 0.85rem;
+}
+
+.create-class-feedback {
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: 16px;
+    display: none;
+}
+
+.create-class-feedback--error {
+    background: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+}
+
+.create-class-feedback--success {
+    background: #f0fdf4;
+    color: #15803d;
+    border: 1px solid #bbf7d0;
+}
+
+/* ── Class Management Card Header ───────────────────────── */
+.class-mgmt-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    gap: 16px;
+}
+
+.class-mgmt-header h2 {
+    margin-bottom: 4px;
+}
+
+.class-mgmt-subtitle {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+/* ── Create Class prominent button ─────────────────────── */
+.btn-create-class {
+    background: #7c3aed !important;
+    border-color: #7c3aed !important;
+    font-weight: 600;
+}
+.btn-create-class:hover {
+    background: #6d28d9 !important;
+    border-color: #6d28d9 !important;
+}
+
+/* ── Join Class Card ─────────────────────────────────────── */
+.join-class-card {
+    background: linear-gradient(135deg, #eff6ff 0%, #f5f3ff 100%);
+    border: 2px dashed #93c5fd;
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 28px;
+}
+
+.join-class-inner {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.join-class-icon {
+    font-size: 2rem;
+    width: 52px;
+    height: 52px;
+    background: white;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.12);
+}
+
+.join-class-text h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+
+.join-class-text p {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.join-class-form {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.join-class-form input {
+    flex: 1;
+    padding: 10px 14px;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    background: white;
+    color: var(--text-primary);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.join-class-form input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.join-class-feedback {
+    margin-top: 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.join-class-feedback--error {
+    background: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+}
+
+.join-class-feedback--success {
+    background: #f0fdf4;
+    color: #15803d;
+    border: 1px solid #bbf7d0;
+}
+
+@media (max-width: 500px) {
+    .join-class-form { flex-direction: column; align-items: stretch; }
 }

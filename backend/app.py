@@ -773,7 +773,6 @@ def manage_crns():
         return jsonify({
             'message': 'Class created successfully',
             'crn_id': crn.id
-        }), 201d
         }), 201
 
 @app.route('/api/crns/<int:crn_id>', methods=['DELETE'])
@@ -852,6 +851,35 @@ def get_assignment_calendar():
             })
     
     return jsonify(assignments), 200
+
+@app.route('/api/join-class', methods=['POST'])
+@login_required
+def join_class():
+    """Allow a student to join a class by entering its CRN code"""
+    if current_user.role != 'student':
+        return jsonify({'error': 'Only students can join classes'}), 403
+
+    data = request.json
+    crn_code = data.get('crn_code', '').strip()
+
+    if not crn_code:
+        return jsonify({'error': 'Please enter a CRN code'}), 400
+
+    crn = CRN.query.filter_by(crn_code=crn_code).first()
+    if not crn:
+        return jsonify({'error': 'Class not found. Please check the CRN and try again.'}), 404
+
+    if current_user.crn == crn_code:
+        return jsonify({'error': 'You are already enrolled in this class'}), 400
+
+    current_user.crn = crn_code
+    db.session.commit()
+
+    return jsonify({
+        'message': f'Successfully joined {crn.course_name}',
+        'crn_code': crn.crn_code,
+        'course_name': crn.course_name
+    }), 200
 
 # Initialize database
 with app.app_context():
