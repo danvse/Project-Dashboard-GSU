@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import os
@@ -14,6 +15,14 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 CORS(app, supports_credentials=True)
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=[
+        'http://localhost:8000',
+        'http://127.0.0.1:8000'
+    ],
+    manage_session=False
+)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
@@ -38,6 +47,8 @@ class User(UserMixin, db.Model):
     team_memberships = db.relationship('TeamMember', backref='student', lazy=True)
     messages_sent = db.relationship('Message', backref='sender', lazy=True, foreign_keys='Message.sender_id')
     messages_received = db.relationship('Message', backref='recipient', lazy=True, foreign_keys='Message.recipient_id')
+    class_messages_sent = db.relationship('ClassMessage', backref='sender', lazy=True, foreign_keys='ClassMessage.sender_id')
+    class_messages_received = db.relationship('ClassMessage', backref='recipient', lazy=True, foreign_keys='ClassMessage.recipient_id')
     tasks_assigned = db.relationship('Task', backref='assignee', lazy=True)
 
 class Project(db.Model):
@@ -70,6 +81,14 @@ class Message(db.Model):
     recipient_id = db.Column(db.Integer, db.ForeignKey('user.id'))  # NULL for group messages
     content = db.Column(db.Text, nullable=False)
     message_type = db.Column(db.String(20), default='group')  # 'group' or 'direct'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ClassMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    recipient_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    crn_code = db.Column(db.String(20), nullable=False)
+    content = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Task(db.Model):
@@ -121,6 +140,40 @@ class UserStory(db.Model):
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
+
+def _is_faculty_for_crn(faculty_user_id, crn_code):
+    if not faculty_user_id or not crn_code:
+        return False
+
+    return CRN.query.filter_by(
+        crn_code=crn_code,
+        faculty_id=faculty_user_id
+    ).first() is not None
+
+def _can_exchange_class_messages(user_a, user_b):
+    if user_a is None or user_b is None:
+        return False
+
+    # TODO: Re-enable strict CRN-based authorization before production release.
+    # Current behavior is intentionally relaxed for testing so any student can
+    # message any faculty member (and vice versa) even without CRN association.
+    # Testing mode: allow direct messaging between any student and any faculty,
+    # regardless of CRN linkage.
+    return (
+        (user_a.role == 'student' and user_b.role == 'faculty') or
+        (user_a.role == 'faculty' and user_b.role == 'student')
+    )
+
+def _serialize_class_message(message):
+    return {
+        'id': message.id,
+        'sender_id': message.sender_id,
+        'sender_name': f"{message.sender.first_name} {message.sender.last_name}",
+        'recipient_id': message.recipient_id,
+        'content': message.content,
+        'crn_code': message.crn_code,
+        'created_at': message.created_at.isoformat()
+    }
 
 # API Routes
 
@@ -567,6 +620,111 @@ def get_faculty():
         'email': f.email
     } for f in faculty_members]), 200
 
+@app.route('/api/class-messages/contacts', methods=['GET'])
+@login_required
+def class_message_contacts():
+    if current_user.role == 'student':
+        users = User.query.filter(User.role == 'faculty').all()
+    elif current_user.role == 'faculty':
+        users = User.query.filter(User.role == 'student').all()
+    else:
+        users = []
+
+    return jsonify([{
+        'id': user.id,
+        'name': f"{user.first_name} {user.last_name}",
+        'role': user.role,
+        'title': user.title,
+        'email': user.email
+    } for user in users]), 200
+
+@app.route('/api/class-messages/<int:other_user_id>', methods=['GET'])
+@login_required
+def class_message_history(other_user_id):
+    other_user = User.query.get_or_404(other_user_id)
+
+    if not _can_exchange_class_messages(current_user, other_user):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    messages = ClassMessage.query.filter(
+        db.or_(
+            db.and_(ClassMessage.sender_id == current_user.id, ClassMessage.recipient_id == other_user.id),
+            db.and_(ClassMessage.sender_id == other_user.id, ClassMessage.recipient_id == current_user.id)
+        )
+    ).order_by(ClassMessage.created_at.asc()).all()
+
+    return jsonify([_serialize_class_message(message) for message in messages]), 200
+
+@app.route('/api/class-messages', methods=['POST'])
+@login_required
+def create_class_message():
+    data = request.json or {}
+    recipient_id = data.get('recipient_id')
+    content = (data.get('content') or '').strip()
+
+    if not recipient_id or not content:
+        return jsonify({'error': 'Recipient and content are required'}), 400
+
+    recipient = User.query.get(recipient_id)
+    if not _can_exchange_class_messages(current_user, recipient):
+        return jsonify({'error': 'Unauthorized recipient'}), 403
+
+    message = ClassMessage(
+        sender_id=current_user.id,
+        recipient_id=recipient.id,
+        crn_code=current_user.crn or recipient.crn or '',
+        content=content
+    )
+
+    db.session.add(message)
+    db.session.commit()
+
+    payload = _serialize_class_message(message)
+    socketio.emit('class_message_received', payload, room=f'user_{current_user.id}')
+    socketio.emit('class_message_received', payload, room=f'user_{recipient.id}')
+
+    return jsonify(payload), 201
+
+@socketio.on('connect')
+def socket_connect():
+    if not current_user.is_authenticated:
+        return False
+
+    join_room(f'user_{current_user.id}')
+    emit('socket_connected', {'user_id': current_user.id})
+
+@socketio.on('send_class_message')
+def send_class_message(data):
+    if not current_user.is_authenticated:
+        emit('class_message_error', {'error': 'Authentication required'})
+        return
+
+    recipient_id = data.get('recipient_id')
+    content = (data.get('content') or '').strip()
+
+    if not recipient_id or not content:
+        emit('class_message_error', {'error': 'Recipient and content are required'})
+        return
+
+    recipient = User.query.get(recipient_id)
+    if not _can_exchange_class_messages(current_user, recipient):
+        emit('class_message_error', {'error': 'Unauthorized recipient'})
+        return
+
+    message = ClassMessage(
+        sender_id=current_user.id,
+        recipient_id=recipient.id,
+        crn_code=current_user.crn,
+        content=content
+    )
+
+    db.session.add(message)
+    db.session.commit()
+
+    payload = _serialize_class_message(message)
+    emit('class_message_received', payload, room=f'user_{current_user.id}')
+    emit('class_message_received', payload, room=f'user_{recipient.id}')
+
 @app.route('/api/class-info', methods=['GET'])
 @login_required
 def get_class_info():
@@ -886,4 +1044,4 @@ with app.app_context():
     db.create_all()
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5001, allow_unsafe_werkzeug=True)

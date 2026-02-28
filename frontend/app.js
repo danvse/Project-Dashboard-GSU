@@ -8,6 +8,10 @@ let projects = [];
 let students = [];
 let currentPage = 1;
 const PROJECTS_PER_PAGE = 6;
+let classSocket = null;
+let classChatContacts = [];
+let activeClassChatRecipientId = null;
+let classChatRetryCount = 0;
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
@@ -67,6 +71,25 @@ function initializeEventListeners() {
 
     // Create Project Form
     document.getElementById('create-project-form').addEventListener('submit', handleCreateProject);
+
+    // Class chat
+    const classChatRecipient = document.getElementById('class-chat-recipient');
+    const classChatForm = document.getElementById('class-chat-form');
+    if (classChatRecipient) {
+        classChatRecipient.addEventListener('change', (e) => {
+            const recipientId = parseInt(e.target.value);
+            if (recipientId) {
+                activeClassChatRecipientId = recipientId;
+                loadClassChatHistory(recipientId);
+            } else {
+                activeClassChatRecipientId = null;
+                renderClassChatMessages([]);
+            }
+        });
+    }
+    if (classChatForm) {
+        classChatForm.addEventListener('submit', sendClassChatMessage);
+    }
 
     // Project Modal
     setupProjectModal();
@@ -152,6 +175,11 @@ async function handleLogout() {
             method: 'POST',
             credentials: 'include'
         });
+
+        if (classSocket) {
+            classSocket.disconnect();
+            classSocket = null;
+        }
         
         currentUser = null;
         localStorage.removeItem('user');
@@ -188,6 +216,7 @@ function showDashboard() {
     loadProjects();
     loadStudents();
     loadUserProfile();
+    initializeClassChat();
     showView('overview');
 }
 
@@ -241,6 +270,7 @@ function showView(viewName) {
         loadMyProjects();
         loadUserStories();
         loadClassInfo();
+        loadClassChatContacts();
     }
 }
 
@@ -554,8 +584,11 @@ function setupProjectModal() {
     document.getElementById('join-project-btn').addEventListener('click', joinProject);
     document.getElementById('leave-project-btn').addEventListener('click', leaveProject);
     
-    // Message form
-    document.getElementById('message-form').addEventListener('submit', sendMessage);
+    // Message form (legacy modal may not include this form)
+    const messageForm = document.getElementById('message-form');
+    if (messageForm) {
+        messageForm.addEventListener('submit', sendMessage);
+    }
 }
 
 async function openProjectModal(projectId) {
@@ -747,6 +780,237 @@ async function sendMessage(e) {
     } catch (error) {
         console.error('Error sending message:', error);
         alert('An error occurred');
+    }
+}
+
+// Class Chat (Student <-> Faculty)
+async function initializeClassChat() {
+    classChatRetryCount = 0;
+    await loadClassChatContacts();
+    connectClassChatSocket();
+}
+
+function connectClassChatSocket() {
+    if (classSocket || typeof io === 'undefined') {
+        return;
+    }
+
+    classSocket = io('http://localhost:5001', {
+        withCredentials: true,
+        transports: ['websocket', 'polling']
+    });
+
+    classSocket.on('class_message_received', (message) => {
+        const isCurrentConversation = activeClassChatRecipientId && (
+            message.sender_id === activeClassChatRecipientId ||
+            message.recipient_id === activeClassChatRecipientId
+        );
+
+        if (isCurrentConversation) {
+            appendClassChatMessage(message);
+        }
+    });
+
+    classSocket.on('class_message_error', (payload) => {
+        alert(payload.error || 'Failed to send message');
+    });
+}
+
+async function loadClassChatContacts() {
+    try {
+        const response = await fetch(`${API_URL}/class-messages/contacts`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            await loadClassChatContactsFallback();
+            return;
+        }
+
+        classChatContacts = await response.json();
+
+        if (classChatContacts.length === 0) {
+            await loadClassChatContactsFallback();
+            return;
+        }
+
+        renderClassChatContacts(classChatContacts);
+    } catch (error) {
+        console.error('Error loading chat contacts:', error);
+        await loadClassChatContactsFallback();
+    }
+}
+
+async function loadClassChatContactsFallback() {
+    try {
+        const endpoint = currentUser && currentUser.role === 'student' ? `${API_URL}/faculty` : `${API_URL}/students`;
+        const response = await fetch(endpoint, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            renderClassChatContacts([]);
+            return;
+        }
+
+        const users = await response.json();
+        classChatContacts = users.map(user => ({
+            id: user.id,
+            name: user.name || `${user.first_name} ${user.last_name}`,
+            role: currentUser && currentUser.role === 'student' ? 'faculty' : 'student',
+            title: user.title,
+            email: user.email
+        }));
+
+        renderClassChatContacts(classChatContacts);
+    } catch (error) {
+        console.error('Error loading fallback chat contacts:', error);
+        renderClassChatContacts([]);
+    }
+}
+
+function renderClassChatContacts(contacts) {
+    const select = document.getElementById('class-chat-recipient');
+    const input = document.getElementById('class-chat-input');
+    if (!select || !input) return;
+
+    if (contacts.length === 0) {
+        const emptyLabel = currentUser && currentUser.role === 'student'
+            ? 'No professors available yet'
+            : 'No students available yet';
+        select.innerHTML = `<option value="">${emptyLabel}</option>`;
+        select.disabled = false;
+        input.disabled = true;
+        renderClassChatMessages([]);
+
+        if (classChatRetryCount < 3) {
+            classChatRetryCount += 1;
+            setTimeout(() => {
+                loadClassChatContacts();
+            }, 1200);
+        }
+        return;
+    }
+
+    classChatRetryCount = 0;
+    select.disabled = false;
+    input.disabled = false;
+    select.innerHTML = contacts.map(contact => {
+        const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
+        return `<option value="${contact.id}">${escapeHtml(contact.name)} (${roleLabel})</option>`;
+    }).join('');
+
+    const selectedId = parseInt(select.value) || contacts[0].id;
+    select.value = String(selectedId);
+    activeClassChatRecipientId = selectedId;
+    loadClassChatHistory(selectedId);
+}
+
+async function loadClassChatHistory(recipientId) {
+    try {
+        const response = await fetch(`${API_URL}/class-messages/${recipientId}`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            renderClassChatMessages([]);
+            return;
+        }
+
+        const messages = await response.json();
+        renderClassChatMessages(messages);
+    } catch (error) {
+        console.error('Error loading class chat history:', error);
+        renderClassChatMessages([]);
+    }
+}
+
+function renderClassChatMessages(messages) {
+    const container = document.getElementById('class-chat-messages');
+    if (!container) return;
+
+    if (!messages.length) {
+        container.innerHTML = '<div class="empty-state"><h3>No messages yet</h3><p>Start a conversation.</p></div>';
+        return;
+    }
+
+    container.innerHTML = messages.map(message => {
+        const isOwn = currentUser && message.sender_id === currentUser.id;
+        return `
+            <div class="message ${isOwn ? 'message-own' : ''}">
+                <div class="message-header">
+                    <span class="message-sender">${escapeHtml(message.sender_name)}</span>
+                    <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+                </div>
+                <div class="message-content">${escapeHtml(message.content)}</div>
+            </div>
+        `;
+    }).join('');
+
+    container.scrollTop = container.scrollHeight;
+}
+
+function appendClassChatMessage(message) {
+    const container = document.getElementById('class-chat-messages');
+    if (!container) return;
+
+    const emptyState = container.querySelector('.empty-state');
+    if (emptyState) {
+        emptyState.remove();
+    }
+
+    const isOwn = currentUser && message.sender_id === currentUser.id;
+    const node = document.createElement('div');
+    node.className = `message ${isOwn ? 'message-own' : ''}`;
+    node.innerHTML = `
+        <div class="message-header">
+            <span class="message-sender">${escapeHtml(message.sender_name)}</span>
+            <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+        </div>
+        <div class="message-content">${escapeHtml(message.content)}</div>
+    `;
+
+    container.appendChild(node);
+    container.scrollTop = container.scrollHeight;
+}
+
+async function sendClassChatMessage(e) {
+    e.preventDefault();
+
+    if (!activeClassChatRecipientId) {
+        return;
+    }
+
+    const input = document.getElementById('class-chat-input');
+    if (!input) return;
+
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+        const response = await fetch(`${API_URL}/class-messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                recipient_id: activeClassChatRecipientId,
+                content
+            })
+        });
+
+        if (!response.ok) {
+            const errorPayload = await response.json();
+            alert(errorPayload.error || 'Failed to send message');
+            return;
+        }
+
+        input.value = '';
+        await loadClassChatHistory(activeClassChatRecipientId);
+    } catch (error) {
+        console.error('Error sending class message:', error);
+        alert('An error occurred while sending your message.');
     }
 }
 

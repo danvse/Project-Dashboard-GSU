@@ -159,6 +159,21 @@
                         <div id="user-stories-list" class="user-stories-container"></div>
                     </div>
 
+                    <div class="class-chat-section">
+                        <div class="section-header">
+                            <h2>💬 Message Class</h2>
+                        </div>
+                        <div class="form-group">
+                            <label for="class-chat-recipient">Conversation</label>
+                            <select id="class-chat-recipient"></select>
+                        </div>
+                        <div id="class-chat-messages" class="messages-list class-chat-messages"></div>
+                        <form id="class-chat-form" class="message-form">
+                            <input type="text" id="class-chat-input" placeholder="Type a message..." maxlength="1000" required>
+                            <button type="submit" class="btn btn-primary">Send</button>
+                        </form>
+                    </div>
+
                     <!-- Calendar Section (Students Only) -->
                     <div class="calendar-section student-only">
                         <h2>📅 Assignment Calendar</h2>
@@ -581,6 +596,7 @@
         </div>
     </div>
 
-    <script src="app.js"></script>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <script src="app.js?v=20260228-chatfix2"></script>
 </body>
 </html>
