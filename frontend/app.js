@@ -8,6 +8,10 @@ let projects = [];
 let students = [];
 let currentPage = 1;
 const PROJECTS_PER_PAGE = 6;
+let classSocket = null;
+let classChatContacts = [];
+let activeClassChatRecipientId = null;
+let classChatRetryCount = 0;
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
@@ -31,17 +35,10 @@ function initializeEventListeners() {
 
     // Role-based fields
     document.getElementById('role').addEventListener('change', (e) => {
-        const studentFields = document.getElementById('student-fields');
         const facultyFields = document.getElementById('faculty-fields');
-        
-        if (e.target.value === 'student') {
-            studentFields.style.display = 'block';
-            facultyFields.style.display = 'none';
-        } else if (e.target.value === 'faculty') {
-            studentFields.style.display = 'none';
+        if (e.target.value === 'faculty') {
             facultyFields.style.display = 'block';
         } else {
-            studentFields.style.display = 'none';
             facultyFields.style.display = 'none';
         }
     });
@@ -74,6 +71,25 @@ function initializeEventListeners() {
 
     // Create Project Form
     document.getElementById('create-project-form').addEventListener('submit', handleCreateProject);
+
+    // Class chat
+    const classChatRecipient = document.getElementById('class-chat-recipient');
+    const classChatForm = document.getElementById('class-chat-form');
+    if (classChatRecipient) {
+        classChatRecipient.addEventListener('change', (e) => {
+            const recipientId = parseInt(e.target.value);
+            if (recipientId) {
+                activeClassChatRecipientId = recipientId;
+                loadClassChatHistory(recipientId);
+            } else {
+                activeClassChatRecipientId = null;
+                renderClassChatMessages([]);
+            }
+        });
+    }
+    if (classChatForm) {
+        classChatForm.addEventListener('submit', sendClassChatMessage);
+    }
 
     // Project Modal
     setupProjectModal();
@@ -126,9 +142,7 @@ async function handleRegister(e) {
         role: document.getElementById('role').value,
     };
     
-    if (formData.role === 'student') {
-        formData.crn = document.getElementById('crn').value;
-    } else if (formData.role === 'faculty') {
+    if (formData.role === 'faculty') {
         formData.title = document.getElementById('title').value;
     }
     
@@ -161,6 +175,11 @@ async function handleLogout() {
             method: 'POST',
             credentials: 'include'
         });
+
+        if (classSocket) {
+            classSocket.disconnect();
+            classSocket = null;
+        }
         
         currentUser = null;
         localStorage.removeItem('user');
@@ -197,6 +216,7 @@ function showDashboard() {
     loadProjects();
     loadStudents();
     loadUserProfile();
+    initializeClassChat();
     showView('overview');
 }
 
@@ -215,7 +235,10 @@ function updateRoleVisibility() {
                 el.style.display = 'none';
             }
         });
-        facultyElements.forEach(el => el.style.display = '');
+        facultyElements.forEach(el => {
+            // Use inline-flex for buttons so they render correctly in flex containers
+            el.style.display = el.tagName === 'BUTTON' ? 'inline-flex' : 'block';
+        });
     } else {
         // Students: Show student items, hide faculty items
         studentElements.forEach(el => {
@@ -247,6 +270,7 @@ function showView(viewName) {
         loadMyProjects();
         loadUserStories();
         loadClassInfo();
+        loadClassChatContacts();
     }
 }
 
@@ -560,8 +584,11 @@ function setupProjectModal() {
     document.getElementById('join-project-btn').addEventListener('click', joinProject);
     document.getElementById('leave-project-btn').addEventListener('click', leaveProject);
     
-    // Message form
-    document.getElementById('message-form').addEventListener('submit', sendMessage);
+    // Message form (legacy modal may not include this form)
+    const messageForm = document.getElementById('message-form');
+    if (messageForm) {
+        messageForm.addEventListener('submit', sendMessage);
+    }
 }
 
 async function openProjectModal(projectId) {
@@ -753,6 +780,237 @@ async function sendMessage(e) {
     } catch (error) {
         console.error('Error sending message:', error);
         alert('An error occurred');
+    }
+}
+
+// Class Chat (Student <-> Faculty)
+async function initializeClassChat() {
+    classChatRetryCount = 0;
+    await loadClassChatContacts();
+    connectClassChatSocket();
+}
+
+function connectClassChatSocket() {
+    if (classSocket || typeof io === 'undefined') {
+        return;
+    }
+
+    classSocket = io('http://localhost:5001', {
+        withCredentials: true,
+        transports: ['websocket', 'polling']
+    });
+
+    classSocket.on('class_message_received', (message) => {
+        const isCurrentConversation = activeClassChatRecipientId && (
+            message.sender_id === activeClassChatRecipientId ||
+            message.recipient_id === activeClassChatRecipientId
+        );
+
+        if (isCurrentConversation) {
+            appendClassChatMessage(message);
+        }
+    });
+
+    classSocket.on('class_message_error', (payload) => {
+        alert(payload.error || 'Failed to send message');
+    });
+}
+
+async function loadClassChatContacts() {
+    try {
+        const response = await fetch(`${API_URL}/class-messages/contacts`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            await loadClassChatContactsFallback();
+            return;
+        }
+
+        classChatContacts = await response.json();
+
+        if (classChatContacts.length === 0) {
+            await loadClassChatContactsFallback();
+            return;
+        }
+
+        renderClassChatContacts(classChatContacts);
+    } catch (error) {
+        console.error('Error loading chat contacts:', error);
+        await loadClassChatContactsFallback();
+    }
+}
+
+async function loadClassChatContactsFallback() {
+    try {
+        const endpoint = currentUser && currentUser.role === 'student' ? `${API_URL}/faculty` : `${API_URL}/students`;
+        const response = await fetch(endpoint, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            renderClassChatContacts([]);
+            return;
+        }
+
+        const users = await response.json();
+        classChatContacts = users.map(user => ({
+            id: user.id,
+            name: user.name || `${user.first_name} ${user.last_name}`,
+            role: currentUser && currentUser.role === 'student' ? 'faculty' : 'student',
+            title: user.title,
+            email: user.email
+        }));
+
+        renderClassChatContacts(classChatContacts);
+    } catch (error) {
+        console.error('Error loading fallback chat contacts:', error);
+        renderClassChatContacts([]);
+    }
+}
+
+function renderClassChatContacts(contacts) {
+    const select = document.getElementById('class-chat-recipient');
+    const input = document.getElementById('class-chat-input');
+    if (!select || !input) return;
+
+    if (contacts.length === 0) {
+        const emptyLabel = currentUser && currentUser.role === 'student'
+            ? 'No professors available yet'
+            : 'No students available yet';
+        select.innerHTML = `<option value="">${emptyLabel}</option>`;
+        select.disabled = false;
+        input.disabled = true;
+        renderClassChatMessages([]);
+
+        if (classChatRetryCount < 3) {
+            classChatRetryCount += 1;
+            setTimeout(() => {
+                loadClassChatContacts();
+            }, 1200);
+        }
+        return;
+    }
+
+    classChatRetryCount = 0;
+    select.disabled = false;
+    input.disabled = false;
+    select.innerHTML = contacts.map(contact => {
+        const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
+        return `<option value="${contact.id}">${escapeHtml(contact.name)} (${roleLabel})</option>`;
+    }).join('');
+
+    const selectedId = parseInt(select.value) || contacts[0].id;
+    select.value = String(selectedId);
+    activeClassChatRecipientId = selectedId;
+    loadClassChatHistory(selectedId);
+}
+
+async function loadClassChatHistory(recipientId) {
+    try {
+        const response = await fetch(`${API_URL}/class-messages/${recipientId}`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            renderClassChatMessages([]);
+            return;
+        }
+
+        const messages = await response.json();
+        renderClassChatMessages(messages);
+    } catch (error) {
+        console.error('Error loading class chat history:', error);
+        renderClassChatMessages([]);
+    }
+}
+
+function renderClassChatMessages(messages) {
+    const container = document.getElementById('class-chat-messages');
+    if (!container) return;
+
+    if (!messages.length) {
+        container.innerHTML = '<div class="empty-state"><h3>No messages yet</h3><p>Start a conversation.</p></div>';
+        return;
+    }
+
+    container.innerHTML = messages.map(message => {
+        const isOwn = currentUser && message.sender_id === currentUser.id;
+        return `
+            <div class="message ${isOwn ? 'message-own' : ''}">
+                <div class="message-header">
+                    <span class="message-sender">${escapeHtml(message.sender_name)}</span>
+                    <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+                </div>
+                <div class="message-content">${escapeHtml(message.content)}</div>
+            </div>
+        `;
+    }).join('');
+
+    container.scrollTop = container.scrollHeight;
+}
+
+function appendClassChatMessage(message) {
+    const container = document.getElementById('class-chat-messages');
+    if (!container) return;
+
+    const emptyState = container.querySelector('.empty-state');
+    if (emptyState) {
+        emptyState.remove();
+    }
+
+    const isOwn = currentUser && message.sender_id === currentUser.id;
+    const node = document.createElement('div');
+    node.className = `message ${isOwn ? 'message-own' : ''}`;
+    node.innerHTML = `
+        <div class="message-header">
+            <span class="message-sender">${escapeHtml(message.sender_name)}</span>
+            <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+        </div>
+        <div class="message-content">${escapeHtml(message.content)}</div>
+    `;
+
+    container.appendChild(node);
+    container.scrollTop = container.scrollHeight;
+}
+
+async function sendClassChatMessage(e) {
+    e.preventDefault();
+
+    if (!activeClassChatRecipientId) {
+        return;
+    }
+
+    const input = document.getElementById('class-chat-input');
+    if (!input) return;
+
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+        const response = await fetch(`${API_URL}/class-messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                recipient_id: activeClassChatRecipientId,
+                content
+            })
+        });
+
+        if (!response.ok) {
+            const errorPayload = await response.json();
+            alert(errorPayload.error || 'Failed to send message');
+            return;
+        }
+
+        input.value = '';
+        await loadClassChatHistory(activeClassChatRecipientId);
+    } catch (error) {
+        console.error('Error sending class message:', error);
+        alert('An error occurred while sending your message.');
     }
 }
 
@@ -1223,41 +1481,8 @@ function populateRegistrationCRNs(crns) {
 }
 
 async function createCRN() {
-    const crnCode = document.getElementById('new-crn-code').value;
-    const courseName = document.getElementById('new-course-name').value;
-    
-    if (!crnCode || !courseName) {
-        alert('Please fill in all fields');
-        return;
-    }
-    
-    try {
-        const response = await fetch(`${API_URL}/crns`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            credentials: 'include',
-            body: JSON.stringify({
-                crn_code: crnCode,
-                course_name: courseName
-            })
-        });
-        
-        if (response.ok) {
-            alert('Class created successfully!');
-            document.getElementById('new-crn-code').value = '';
-            document.getElementById('new-course-name').value = '';
-            loadMyClasses();  // Reload classes with stats
-            loadClassInfo();  // Update class info on dashboard
-        } else {
-            const error = await response.json();
-            alert('Failed to create class: ' + (error.error || 'Unknown error'));
-        }
-    } catch (error) {
-        console.error('Error creating class:', error);
-        alert('An error occurred');
-    }
+    // Inline form removed — delegate to the full Create Class modal
+    showCreateClass();
 }
 
 async function deleteCRN(crnId) {
@@ -1464,6 +1689,30 @@ function escapeHtml(text) {
 // CLASS MANAGEMENT FUNCTIONS
 // ==========================================
 
+function showCreateClassError(msg) {
+    let el = document.getElementById('create-class-feedback');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'create-class-feedback';
+        document.getElementById('create-class-form').prepend(el);
+    }
+    el.className = 'create-class-feedback create-class-feedback--error';
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
+function showCreateClassSuccess(msg) {
+    let el = document.getElementById('create-class-feedback');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'create-class-feedback';
+        document.getElementById('create-class-form').prepend(el);
+    }
+    el.className = 'create-class-feedback create-class-feedback--success';
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
 function showCreateClass() {
     const modal = document.getElementById('create-class-modal');
     const closeBtn = modal.querySelector('.close');
@@ -1473,40 +1722,74 @@ function showCreateClass() {
     };
     
     modal.classList.add('active');
+
+    // Clear any previous feedback
+    const fb = document.getElementById('create-class-feedback');
+    if (fb) fb.style.display = 'none';
 }
+
+// Create class — cancel button
+document.getElementById('cancel-create-class').addEventListener('click', () => {
+    document.getElementById('create-class-modal').classList.remove('active');
+    document.getElementById('create-class-form').reset();
+});
 
 // Create class form submission
 document.getElementById('create-class-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    
+
+    const crn     = document.getElementById('new-class-crn').value.trim();
+    const name    = document.getElementById('new-class-name').value.trim();
+    const semester = document.getElementById('new-class-semester').value;
+
+    if (!crn || !name || !semester) {
+        showCreateClassError('Please fill in all required fields (CRN, Course Name, Semester).');
+        return;
+    }
+
     const classData = {
-        crn_code: document.getElementById('new-class-crn').value,
-        course_name: document.getElementById('new-class-name').value
+        crn_code:    crn,
+        course_name: name,
+        section:     document.getElementById('new-class-section').value.trim() || null,
+        description: document.getElementById('new-class-description').value.trim() || null,
+        semester:    semester,
+        capacity:    document.getElementById('new-class-capacity').value ? parseInt(document.getElementById('new-class-capacity').value) : null,
+        start_date:  document.getElementById('new-class-start').value || null,
+        end_date:    document.getElementById('new-class-end').value || null,
+        meeting_days: document.getElementById('new-class-days').value || null,
+        location:    document.getElementById('new-class-location').value.trim() || null,
     };
-    
+
+    const submitBtn = document.getElementById('submit-create-class');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating…';
+
     try {
         const response = await fetch(`${API_URL}/crns`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify(classData)
         });
-        
+
         if (response.ok) {
-            alert('Class created successfully!');
-            document.getElementById('create-class-modal').classList.remove('active');
-            document.getElementById('create-class-form').reset();
-            loadClassInfo();
-            loadUserProfile(); // Reload profile to show new class
+            showCreateClassSuccess(`"${name}" was created successfully!`);
+            setTimeout(() => {
+                document.getElementById('create-class-modal').classList.remove('active');
+                document.getElementById('create-class-form').reset();
+                loadClassInfo();
+                loadUserProfile();
+            }, 1500);
         } else {
             const error = await response.json();
-            alert('Failed to create class: ' + (error.error || 'Unknown error'));
+            showCreateClassError('Failed to create class: ' + (error.error || 'Unknown error'));
         }
     } catch (error) {
         console.error('Error creating class:', error);
-        alert('An error occurred');
+        showCreateClassError('A network error occurred. Please try again.');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<span class="btn-icon">✚</span> Create Class';
     }
 });
 
@@ -1519,15 +1802,76 @@ async function loadClassInfo() {
         if (response.ok) {
             const classInfo = await response.json();
             displayClassInfo(classInfo);
+            // Student has a class — hide the join card
+            const joinCard = document.getElementById('join-class-card');
+            if (joinCard) joinCard.style.display = 'none';
         } else {
             document.getElementById('class-info-content').innerHTML = 
                 '<p>No class information available</p>';
+            // Show join card only for students without a class
+            if (currentUser && currentUser.role === 'student') {
+                const joinCard = document.getElementById('join-class-card');
+                if (joinCard) joinCard.style.display = 'block';
+            }
         }
     } catch (error) {
         console.error('Error loading class info:', error);
         document.getElementById('class-info-content').innerHTML = 
             '<p>Error loading class information</p>';
     }
+}
+
+async function joinClass() {
+    const input = document.getElementById('join-crn-input');
+    const feedback = document.getElementById('join-class-feedback');
+    const crn_code = input.value.trim();
+
+    if (!crn_code) {
+        showJoinFeedback('Please enter a CRN code.', 'error');
+        return;
+    }
+
+    const btn = document.querySelector('#join-class-card .btn-primary');
+    btn.disabled = true;
+    btn.textContent = 'Joining…';
+
+    try {
+        const response = await fetch(`${API_URL}/join-class`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ crn_code })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            showJoinFeedback(`✓ ${data.message}`, 'success');
+            input.value = '';
+            // Update stored user and refresh dashboard
+            currentUser.crn = data.crn_code;
+            localStorage.setItem('user', JSON.stringify(currentUser));
+            setTimeout(() => {
+                document.getElementById('join-class-card').style.display = 'none';
+                loadClassInfo();
+                loadProjects();
+            }, 1200);
+        } else {
+            showJoinFeedback(data.error || 'Failed to join class.', 'error');
+        }
+    } catch (error) {
+        showJoinFeedback('A network error occurred. Please try again.', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Join Class';
+    }
+}
+
+function showJoinFeedback(msg, type) {
+    const el = document.getElementById('join-class-feedback');
+    el.textContent = msg;
+    el.className = `join-class-feedback join-class-feedback--${type}`;
+    el.style.display = 'block';
 }
 
 function displayClassInfo(classInfo) {
