@@ -198,6 +198,7 @@
                             <button class="btn btn-primary" onclick="showView('students')">Find Teammates</button>
                             <button class="btn btn-primary faculty-only" onclick="showCreateProject()">+ Create Project</button>
                             <button class="btn btn-primary btn-create-class faculty-only" onclick="showCreateClass()">🎓 Create Class</button>
+                            <button class="btn btn-primary btn-custom-projects" onclick="showCustomProjects()">Custom Projects</button>
                         </div>
                     </div>
 
@@ -579,6 +580,83 @@
                 </form>
             </div>
         </div>
+        <!-- Custom Projects Modal (Student: submit proposal / Faculty: review proposals) -->
+        <div id="custom-projects-modal" class="modal">
+            <div class="modal-content modal-large">
+                <span class="close" id="custom-projects-close">&times;</span>
+
+                <!-- ===== STUDENT VIEW ===== -->
+                <div id="custom-projects-student-view">
+                    <h2>Custom Projects</h2>
+                    <p class="modal-subtitle">Propose your own project idea for faculty review. Once approved, it will appear in the Project Repository.</p>
+
+                    <div class="custom-projects-tabs">
+                        <button class="tab-btn active" data-cptab="propose" onclick="switchCPTab('propose')">Submit Proposal</button>
+                        <button class="tab-btn" data-cptab="my-proposals" onclick="switchCPTab('my-proposals')">My Proposals</button>
+                    </div>
+
+                    <!-- Submit Proposal Tab -->
+                    <div id="cp-propose-tab" class="tab-content active">
+                        <form id="custom-project-form">
+                            <div class="form-group">
+                                <label for="cp-project-name">Project Name</label>
+                                <input type="text" id="cp-project-name" required placeholder="Enter your project name">
+                            </div>
+                            <div class="form-group">
+                                <label for="cp-project-description">Description</label>
+                                <textarea id="cp-project-description" rows="4" required placeholder="Describe your project idea..."></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label for="cp-project-course">Course</label>
+                                <input type="text" id="cp-project-course" required placeholder="e.g., CSC4351">
+                            </div>
+                            <div class="form-group">
+                                <label for="cp-project-capacity">Team Capacity</label>
+                                <input type="number" id="cp-project-capacity" min="1" max="10" required placeholder="e.g., 4">
+                            </div>
+                            <button type="submit" class="btn btn-primary">Submit for Approval</button>
+                        </form>
+                    </div>
+
+                    <!-- My Proposals Tab -->
+                    <div id="cp-my-proposals-tab" class="tab-content">
+                        <div id="my-proposals-list"></div>
+                    </div>
+                </div>
+
+                <!-- ===== FACULTY VIEW ===== -->
+                <div id="custom-projects-faculty-view" style="display:none;">
+                    <h2>Custom Project Proposals</h2>
+                    <p class="modal-subtitle">Review and approve or deny student-submitted project proposals. Approved proposals become live projects.</p>
+
+                    <div class="custom-projects-tabs">
+                        <button class="tab-btn active" data-cptab="pending" onclick="switchFacultyCP('pending')">Pending</button>
+                        <button class="tab-btn" data-cptab="reviewed" onclick="switchFacultyCP('reviewed')">Reviewed</button>
+                    </div>
+
+                    <div id="faculty-cp-pending-list" class="faculty-cp-list"></div>
+                    <div id="faculty-cp-reviewed-list" class="faculty-cp-list" style="display:none;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Faculty Feedback Modal (shown when denying or approving with a note) -->
+        <div id="cp-feedback-modal" class="modal">
+            <div class="modal-content">
+                <span class="close" id="cp-feedback-close">&times;</span>
+                <h2 id="cp-feedback-title">Review Proposal</h2>
+                <p id="cp-feedback-subtitle"></p>
+                <div class="form-group">
+                    <label for="cp-feedback-text">Feedback / Note <span style="font-weight:normal;color:#888;">(optional)</span></label>
+                    <textarea id="cp-feedback-text" rows="4" placeholder="Leave a note for the student..."></textarea>
+                </div>
+                <div class="modal-footer-actions">
+                    <button class="btn btn-secondary" onclick="closeCPFeedbackModal()">Cancel</button>
+                    <button id="cp-feedback-confirm-btn" class="btn btn-primary">Confirm</button>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <script src="app.js"></script>
