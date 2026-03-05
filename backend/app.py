@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, session, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
@@ -16,6 +16,12 @@ db = SQLAlchemy(app)
 CORS(app, supports_credentials=True)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
+
+@login_manager.unauthorized_handler
+def unauthorized():
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Authentication required'}), 401
+    return redirect(url_for('login'))
 
 # Database Models
 class User(UserMixin, db.Model):
@@ -90,6 +96,25 @@ class Milestone(db.Model):
     due_date = db.Column(db.DateTime, nullable=False)
     status = db.Column(db.String(20), default='upcoming')  # 'upcoming', 'completed'
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class CustomProject(db.Model):
+    """Student-proposed projects that require faculty approval before becoming live."""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    capacity = db.Column(db.Integer, nullable=False)
+    course = db.Column(db.String(100), nullable=False)
+    proposer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    # 'pending', 'approved', 'denied'
+    approval_status = db.Column(db.String(20), default='pending')
+    faculty_feedback = db.Column(db.Text)          # Optional note from faculty on denial/approval
+    approved_project_id = db.Column(db.Integer, db.ForeignKey('project.id'))  # Set when approved
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    reviewed_at = db.Column(db.DateTime)
+
+    # Relationships
+    proposer = db.relationship('User', backref='custom_projects_proposed', lazy=True)
+    approved_project = db.relationship('Project', backref='custom_project_origin', lazy=True)
 
 class CRN(db.Model):
     """Course Reference Number model"""
@@ -880,6 +905,130 @@ def join_class():
         'crn_code': crn.crn_code,
         'course_name': crn.course_name
     }), 200
+
+# ==========================================
+# CUSTOM PROJECT ENDPOINTS
+# ==========================================
+
+@app.route('/api/custom-projects', methods=['GET', 'POST'])
+@login_required
+def custom_projects():
+    """
+    GET  – Students see their own proposals.
+           Faculty see all pending proposals from students in their CRN.
+    POST – Students submit a new custom project proposal.
+    """
+    if request.method == 'GET':
+        if current_user.role == 'faculty':
+            # Show all proposals from students enrolled in this faculty's CRN
+            proposals = (
+                CustomProject.query
+                .join(User, CustomProject.proposer_id == User.id)
+                .filter(User.crn == current_user.crn)
+                .order_by(CustomProject.created_at.desc())
+                .all()
+            )
+        else:
+            # Students only see their own proposals
+            proposals = (
+                CustomProject.query
+                .filter_by(proposer_id=current_user.id)
+                .order_by(CustomProject.created_at.desc())
+                .all()
+            )
+
+        return jsonify([{
+            'id': cp.id,
+            'name': cp.name,
+            'description': cp.description,
+            'capacity': cp.capacity,
+            'course': cp.course,
+            'approval_status': cp.approval_status,
+            'faculty_feedback': cp.faculty_feedback,
+            'approved_project_id': cp.approved_project_id,
+            'proposer': {
+                'id': cp.proposer.id,
+                'name': f"{cp.proposer.first_name} {cp.proposer.last_name}"
+            },
+            'created_at': cp.created_at.isoformat(),
+            'reviewed_at': cp.reviewed_at.isoformat() if cp.reviewed_at else None
+        } for cp in proposals]), 200
+
+    # POST – students only
+    if current_user.role != 'student':
+        return jsonify({'error': 'Only students can submit custom project proposals'}), 403
+
+    data = request.json
+    if not data.get('name') or not data.get('description') or not data.get('course') or not data.get('capacity'):
+        return jsonify({'error': 'All fields are required'}), 400
+
+    proposal = CustomProject(
+        name=data['name'],
+        description=data['description'],
+        capacity=int(data['capacity']),
+        course=data['course'],
+        proposer_id=current_user.id
+    )
+
+    db.session.add(proposal)
+    db.session.commit()
+
+    return jsonify({'message': 'Custom project submitted for faculty approval', 'proposal_id': proposal.id}), 201
+
+
+@app.route('/api/custom-projects/<int:proposal_id>/review', methods=['POST'])
+@login_required
+def review_custom_project(proposal_id):
+    """Faculty accept or deny a student's custom project proposal."""
+    if current_user.role != 'faculty':
+        return jsonify({'error': 'Only faculty can review proposals'}), 403
+
+    proposal = CustomProject.query.get_or_404(proposal_id)
+
+    # Make sure the proposer is in the same CRN as the faculty
+    proposer = User.query.get(proposal.proposer_id)
+    if proposer.crn != current_user.crn:
+        return jsonify({'error': 'Unauthorized: proposal is not from your class'}), 403
+
+    if proposal.approval_status != 'pending':
+        return jsonify({'error': 'This proposal has already been reviewed'}), 400
+
+    data = request.json
+    action = data.get('action')  # 'approve' or 'deny'
+
+    if action not in ('approve', 'deny'):
+        return jsonify({'error': "action must be 'approve' or 'deny'"}), 400
+
+    proposal.faculty_feedback = data.get('feedback', '')
+    proposal.reviewed_at = datetime.utcnow()
+
+    if action == 'approve':
+        proposal.approval_status = 'approved'
+
+        # Create the real project, credited to the faculty reviewer
+        new_project = Project(
+            name=proposal.name,
+            description=proposal.description,
+            capacity=proposal.capacity,
+            course=proposal.course,
+            creator_id=current_user.id
+        )
+        db.session.add(new_project)
+        db.session.flush()  # get new_project.id before commit
+
+        proposal.approved_project_id = new_project.id
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Proposal approved and project created',
+            'project_id': new_project.id
+        }), 200
+
+    else:  # deny
+        proposal.approval_status = 'denied'
+        db.session.commit()
+        return jsonify({'message': 'Proposal denied'}), 200
+
 
 # Initialize database
 with app.app_context():

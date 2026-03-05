@@ -522,19 +522,20 @@ function setupProjectModal() {
         modal.classList.remove('active');
     };
     
-    window.onclick = (event) => {
+    window.addEventListener('click', (event) => {
         if (event.target === modal) {
             modal.classList.remove('active');
         }
-    };
+    });
     
-    // Tab switching
-    document.querySelectorAll('.tab-btn').forEach(btn => {
+    // Tab switching — scoped to project modal only so CP modal tabs are not affected
+    const projectModal = document.getElementById('project-modal');
+    projectModal.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const tabName = e.target.dataset.tab;
             
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            projectModal.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            projectModal.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             
             e.target.classList.add('active');
             document.getElementById(`${tabName}-tab`).classList.add('active');
@@ -1686,3 +1687,330 @@ loadDashboard = async function() {
         loadAssignmentCalendar();
     }
 };
+
+// ==========================================
+// CUSTOM PROJECTS FUNCTIONS
+// ==========================================
+
+let cpFeedbackAction = null;   // 'approve' | 'deny'
+let cpFeedbackProposalId = null;
+
+// ---- Open/close the main Custom Projects modal ----
+
+function showCustomProjects() {
+    const modal = document.getElementById('custom-projects-modal');
+    const closeBtn = modal.querySelector('.close');
+
+    closeBtn.onclick = () => {
+        modal.classList.remove('active');
+    };
+
+    // Wire up form submit every time modal opens (matches Create Class pattern)
+    const form = document.getElementById('custom-project-form');
+    form.onsubmit = async (e) => {
+        e.preventDefault();
+
+        const proposalData = {
+            name: document.getElementById('cp-project-name').value,
+            description: document.getElementById('cp-project-description').value,
+            course: document.getElementById('cp-project-course').value,
+            capacity: parseInt(document.getElementById('cp-project-capacity').value)
+        };
+
+        const submitBtn = form.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting…';
+
+        try {
+            const response = await fetch(`${API_URL}/custom-projects`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(proposalData)
+            });
+
+            if (response.ok) {
+                alert('Proposal submitted! A faculty member will review it soon.');
+                form.reset();
+                switchCPTab('my-proposals');
+                loadMyProposals();
+            } else {
+                const err = await response.json();
+                alert('Failed to submit: ' + (err.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error submitting custom project:', error);
+            alert('A network error occurred. Please try again.');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit for Approval';
+        }
+    };
+
+    if (currentUser.role === 'student') {
+        document.getElementById('custom-projects-student-view').style.display = 'block';
+        document.getElementById('custom-projects-faculty-view').style.display = 'none';
+        // Default to the submit tab and load proposals
+        switchCPTab('propose');
+        loadMyProposals();
+    } else {
+        document.getElementById('custom-projects-student-view').style.display = 'none';
+        document.getElementById('custom-projects-faculty-view').style.display = 'block';
+        // Default to pending tab and load all proposals
+        switchFacultyCP('pending');
+        loadFacultyProposals();
+    }
+
+    modal.classList.add('active');
+}
+
+// Click outside modals to close
+window.addEventListener('click', (e) => {
+    const cpModal = document.getElementById('custom-projects-modal');
+    if (e.target === cpModal) cpModal.classList.remove('active');
+    const fbModal = document.getElementById('cp-feedback-modal');
+    if (e.target === fbModal) fbModal.classList.remove('active');
+});
+// ---- Tab switching helpers ----
+
+function switchCPTab(tabName) {
+    // Update tab buttons
+    document.querySelectorAll('#custom-projects-student-view .tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.cptab === tabName);
+    });
+    document.getElementById('cp-propose-tab').classList.toggle('active', tabName === 'propose');
+    document.getElementById('cp-my-proposals-tab').classList.toggle('active', tabName === 'my-proposals');
+
+    if (tabName === 'my-proposals') {
+        loadMyProposals();
+    }
+}
+
+function switchFacultyCP(tabName) {
+    document.querySelectorAll('#custom-projects-faculty-view .tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.cptab === tabName);
+    });
+    document.getElementById('faculty-cp-pending-list').style.display = tabName === 'pending' ? 'block' : 'none';
+    document.getElementById('faculty-cp-reviewed-list').style.display = tabName === 'reviewed' ? 'block' : 'none';
+}
+
+// ---- Student: load their own proposals ----
+
+async function loadMyProposals() {
+    const container = document.getElementById('my-proposals-list');
+    container.innerHTML = '<p>Loading…</p>';
+
+    try {
+        const response = await fetch(`${API_URL}/custom-projects`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            container.innerHTML = '<p>Error loading proposals.</p>';
+            return;
+        }
+
+        const proposals = await response.json();
+
+        if (proposals.length === 0) {
+            container.innerHTML = '<div class="empty-state"><h3>No proposals yet</h3><p>Use the Submit Proposal tab to propose your first project.</p></div>';
+            return;
+        }
+
+        container.innerHTML = proposals.map(p => {
+            const statusClass = p.approval_status === 'approved' ? 'status-open'
+                              : p.approval_status === 'denied'   ? 'status-full'
+                              : 'status-pending';
+            const statusLabel = p.approval_status.charAt(0).toUpperCase() + p.approval_status.slice(1);
+
+            return `
+                <div class="project-card">
+                    <div class="project-card-header">
+                        <div>
+                            <h3>${escapeHtml(p.name)}</h3>
+                            <small>${escapeHtml(p.course)}</small>
+                        </div>
+                        <span class="project-status ${statusClass}">${statusLabel}</span>
+                    </div>
+                    <p>${escapeHtml(p.description)}</p>
+                    <div class="project-meta">
+                        <span>Team capacity: ${p.capacity}</span>
+                        <span>Submitted: ${new Date(p.created_at).toLocaleDateString()}</span>
+                    </div>
+                    ${p.faculty_feedback ? `
+                        <div class="cp-faculty-feedback">
+                            <strong>Faculty feedback:</strong> ${escapeHtml(p.faculty_feedback)}
+                        </div>
+                    ` : ''}
+                    ${p.approval_status === 'approved' && p.approved_project_id ? `
+                        <div class="cp-approved-note">
+                            ✅ This project is now live! <a href="#" onclick="openProjectModal(${p.approved_project_id}); document.getElementById('custom-projects-modal').classList.remove('active');">View Project</a>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }).join('');
+
+    } catch (error) {
+        console.error('Error loading proposals:', error);
+        container.innerHTML = '<p>Error loading proposals.</p>';
+    }
+}
+
+// ---- Faculty: load and display all proposals ----
+
+async function loadFacultyProposals() {
+    const pendingContainer = document.getElementById('faculty-cp-pending-list');
+    const reviewedContainer = document.getElementById('faculty-cp-reviewed-list');
+    pendingContainer.innerHTML = '<p>Loading…</p>';
+    reviewedContainer.innerHTML = '<p>Loading…</p>';
+
+    try {
+        const response = await fetch(`${API_URL}/custom-projects`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            pendingContainer.innerHTML = '<p>Error loading proposals.</p>';
+            return;
+        }
+
+        const proposals = await response.json();
+
+        const pending  = proposals.filter(p => p.approval_status === 'pending');
+        const reviewed = proposals.filter(p => p.approval_status !== 'pending');
+
+        renderFacultyProposals(pendingContainer,  pending,  true);
+        renderFacultyProposals(reviewedContainer, reviewed, false);
+
+    } catch (error) {
+        console.error('Error loading faculty proposals:', error);
+        pendingContainer.innerHTML = '<p>Error loading proposals.</p>';
+    }
+}
+
+function renderFacultyProposals(container, proposals, showActions) {
+    if (proposals.length === 0) {
+        container.innerHTML = '<div class="empty-state"><h3>No proposals here</h3></div>';
+        return;
+    }
+
+    container.innerHTML = proposals.map(p => {
+        const statusClass = p.approval_status === 'approved' ? 'status-open'
+                          : p.approval_status === 'denied'   ? 'status-full'
+                          : 'status-pending';
+        const statusLabel = p.approval_status.charAt(0).toUpperCase() + p.approval_status.slice(1);
+
+        return `
+            <div class="project-card cp-faculty-card">
+                <div class="project-card-header">
+                    <div>
+                        <h3>${escapeHtml(p.name)}</h3>
+                        <small>${escapeHtml(p.course)} &nbsp;•&nbsp; Proposed by <strong>${escapeHtml(p.proposer.name)}</strong></small>
+                    </div>
+                    <span class="project-status ${statusClass}">${statusLabel}</span>
+                </div>
+                <p>${escapeHtml(p.description)}</p>
+                <div class="project-meta">
+                    <span>Team capacity: ${p.capacity}</span>
+                    <span>Submitted: ${new Date(p.created_at).toLocaleDateString()}</span>
+                    ${p.reviewed_at ? `<span>Reviewed: ${new Date(p.reviewed_at).toLocaleDateString()}</span>` : ''}
+                </div>
+                ${p.faculty_feedback ? `
+                    <div class="cp-faculty-feedback">
+                        <strong>Your feedback:</strong> ${escapeHtml(p.faculty_feedback)}
+                    </div>
+                ` : ''}
+                ${showActions ? `
+                    <div class="cp-review-actions">
+                        <button class="btn btn-primary btn-sm" onclick="openCPFeedbackModal(${p.id}, 'approve')">✔ Approve</button>
+                        <button class="btn btn-danger btn-sm"  onclick="openCPFeedbackModal(${p.id}, 'deny')">✘ Deny</button>
+                    </div>
+                ` : ''}
+                ${p.approval_status === 'approved' && p.approved_project_id ? `
+                    <div class="cp-approved-note">
+                        ✅ Project is live. <a href="#" onclick="openProjectModal(${p.approved_project_id}); document.getElementById('custom-projects-modal').classList.remove('active');">View Project</a>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }).join('');
+}
+
+// ---- Faculty: open the feedback/confirmation modal ----
+
+function openCPFeedbackModal(proposalId, action) {
+    cpFeedbackAction = action;
+    cpFeedbackProposalId = proposalId;
+
+    const modal = document.getElementById('cp-feedback-modal');
+    const closeBtn = modal.querySelector('.close');
+
+    closeBtn.onclick = () => {
+        modal.classList.remove('active');
+    };
+
+    const title    = document.getElementById('cp-feedback-title');
+    const subtitle = document.getElementById('cp-feedback-subtitle');
+    const confirmBtn = document.getElementById('cp-feedback-confirm-btn');
+
+    if (action === 'approve') {
+        title.textContent = '✔ Approve Proposal';
+        subtitle.textContent = 'This will create a live project from the student\'s proposal. You may leave optional feedback.';
+        confirmBtn.textContent = 'Approve Project';
+        confirmBtn.className = 'btn btn-primary';
+    } else {
+        title.textContent = '✘ Deny Proposal';
+        subtitle.textContent = 'The student will be notified that their proposal was not approved. Consider leaving feedback explaining why.';
+        confirmBtn.textContent = 'Deny Proposal';
+        confirmBtn.className = 'btn btn-danger';
+    }
+
+    document.getElementById('cp-feedback-text').value = '';
+    
+    // Wire up confirm button every time modal opens (matches Create Class pattern)
+    document.getElementById('cp-feedback-confirm-btn').onclick = async () => {
+        if (!cpFeedbackAction || !cpFeedbackProposalId) return;
+
+        const feedback = document.getElementById('cp-feedback-text').value.trim();
+        const btn = document.getElementById('cp-feedback-confirm-btn');
+        btn.disabled = true;
+        btn.textContent = 'Processing…';
+
+        try {
+            const response = await fetch(`${API_URL}/custom-projects/${cpFeedbackProposalId}/review`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ action: cpFeedbackAction, feedback })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                alert(result.message);
+                closeCPFeedbackModal();
+                loadFacultyProposals();
+                if (cpFeedbackAction === 'approve') {
+                    loadProjects();
+                }
+            } else {
+                const err = await response.json();
+                alert('Error: ' + (err.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error reviewing proposal:', error);
+            alert('A network error occurred.');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = cpFeedbackAction === 'approve' ? 'Approve Project' : 'Deny Proposal';
+        }
+    };
+
+    document.getElementById('cp-feedback-modal').classList.add('active');
+}
+
+function closeCPFeedbackModal() {
+    document.getElementById('cp-feedback-modal').classList.remove('active');
+    cpFeedbackAction = null;
+    cpFeedbackProposalId = null;
+}
