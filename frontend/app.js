@@ -993,46 +993,12 @@ function renderClassChatContacts(contacts) {
     const input = document.getElementById('class-chat-input');
     if (!select || !input) return;
 
-    // Combine contacts and projects
-    const allOptions = [];
-    
-    // Add people (faculty/students)
-    if (contacts && contacts.length > 0) {
-        allOptions.push({
-            type: 'person',
-            id: contacts[0].id,
-            name: contacts[0].name,
-            role: contacts[0].role
-        });
-        
-        contacts.forEach(contact => {
-            const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
-            allOptions.push({
-                type: 'person',
-                id: contact.id,
-                name: contact.name,
-                label: `${escapeHtml(contact.name)} (${roleLabel})`
-            });
-        });
-    }
-    
-    // Add projects  
-    if (userProjectsForChat && userProjectsForChat.length > 0) {
-        userProjectsForChat.forEach(project => {
-            allOptions.push({
-                type: 'project',
-                id: project.id,
-                name: project.name,
-                label: `👥 ${escapeHtml(project.name)} (${project.course})`
-            });
-        });
-    }
+    const hasPeople = Array.isArray(contacts) && contacts.length > 0;
+    const hasProjects = Array.isArray(userProjectsForChat) && userProjectsForChat.length > 0;
+    const previousSelection = select.value;
 
-    if (allOptions.length === 0) {
-        const emptyLabel = currentUser && currentUser.role === 'student'
-            ? 'No conversations available yet'
-            : 'No conversations available yet';
-        select.innerHTML = `<option value="">${emptyLabel}</option>`;
+    if (!hasPeople && !hasProjects) {
+        select.innerHTML = '<option value="">No conversations available yet</option>';
         select.disabled = true;
         input.disabled = true;
         activeClassChatRecipientId = null;
@@ -1056,7 +1022,7 @@ function renderClassChatContacts(contacts) {
     let optionsHtml = '<option value="">Select a conversation...</option>';
     
     // Add person separator if there are people
-    if (contacts && contacts.length > 0) {
+    if (hasPeople) {
         optionsHtml += '<optgroup label="Class Contacts">';
         contacts.forEach(contact => {
             const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
@@ -1066,7 +1032,7 @@ function renderClassChatContacts(contacts) {
     }
     
     // Add project separator if there are projects
-    if (userProjectsForChat && userProjectsForChat.length > 0) {
+    if (hasProjects) {
         optionsHtml += '<optgroup label="Project Teams">';
         userProjectsForChat.forEach(project => {
             optionsHtml += `<option value="project_${project.id}">👥 ${escapeHtml(project.name)} (${project.course})</option>`;
@@ -1075,6 +1041,11 @@ function renderClassChatContacts(contacts) {
     }
     
     select.innerHTML = optionsHtml;
+
+    // Keep user's current conversation selected when lists refresh.
+    if (previousSelection && select.querySelector(`option[value="${previousSelection}"]`)) {
+        select.value = previousSelection;
+    }
 }
 
 async function loadClassChatHistory(recipientId) {
@@ -1244,6 +1215,12 @@ async function loadGroupChatMessages(projectId) {
         }
         
         const messages = await response.json();
+
+        // Ignore late responses if the user switched to a different conversation.
+        if (activeGroupChatProjectId !== projectId) {
+            return;
+        }
+
         renderGroupChatMessages(messages);
     } catch (error) {
         console.error('Error loading group chat messages:', error);
