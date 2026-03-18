@@ -299,6 +299,15 @@ def projects():
             'course': p.course,
             'status': p.status,
             'current_members': len(p.team_members),
+            'team_members': [
+                {
+                    'id': m.id,
+                    'name': f"{m.first_name} {m.last_name}",
+                    'skills': m.skills,
+                    'joined_at': m.created_at.isoformat() if hasattr(m, 'created_at') else None
+                }
+                for m in p.team_members
+            ],
             'creator': {
                 'name': f"{p.creator.first_name} {p.creator.last_name}",
                 'title': p.creator.title
@@ -461,14 +470,18 @@ def project_messages(project_id):
         } for m in messages]), 200
     
     elif request.method == 'POST':
-        data = request.json
+        data = request.json or {}
+        content = (data.get('content') or '').strip()
+
+        if not content:
+            return jsonify({'error': 'Message content is required'}), 400
         
         message = Message(
             project_id=project_id,
             sender_id=current_user.id,
-            recipient_id=data.get('recipient_id'),
-            content=data['content'],
-            message_type=data.get('message_type', 'group')
+            recipient_id=None,
+            content=content,
+            message_type='group'
         )
         
         db.session.add(message)
