@@ -1189,19 +1189,37 @@ async function loadUserProjectsForChat() {
         
         if (!response.ok) {
             console.error('Failed to fetch projects for chat:', response.status);
+            userProjectsForChat = [];
             return;
         }
         
         const allProjects = await response.json();
-        
-        // Filter projects where user is a member
-        userProjectsForChat = allProjects.filter(p => {
-            if (!p.team_members) return false;
-            
-            // Handle both number and string IDs
-            const userId = String(currentUser.id);
-            return p.team_members.some(m => String(m.id) === userId);
-        });
+
+        // Project list responses may omit team_members; fetch details per project for reliable membership checks.
+        const projectDetails = await Promise.all(
+            allProjects.map(async (project) => {
+                try {
+                    const detailResponse = await fetch(`${API_URL}/projects/${project.id}`, {
+                        credentials: 'include'
+                    });
+
+                    if (!detailResponse.ok) {
+                        return null;
+                    }
+
+                    return await detailResponse.json();
+                } catch (error) {
+                    console.error(`Failed to load project details for ${project.id}:`, error);
+                    return null;
+                }
+            })
+        );
+
+        const userId = String(currentUser.id);
+        userProjectsForChat = projectDetails.filter(project =>
+            project && Array.isArray(project.team_members) &&
+            project.team_members.some(member => String(member.id) === userId)
+        );
     } catch (error) {
         console.error('Error loading user projects:', error);
         userProjectsForChat = [];
