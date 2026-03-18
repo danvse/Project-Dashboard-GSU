@@ -15,6 +15,7 @@ let classChatRetryCount = 0;
 let canAccessProjectChat = false;
 let userProjectsForChat = [];
 let activeGroupChatProjectId = null;
+let groupChatRefreshIntervalId = null;
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
@@ -84,6 +85,7 @@ function initializeEventListeners() {
             if (!value) {
                 activeClassChatRecipientId = null;
                 activeGroupChatProjectId = null;
+                stopGroupChatAutoRefresh();
                 renderClassChatMessages([]);
                 return;
             }
@@ -93,11 +95,13 @@ function initializeEventListeners() {
                 const projectId = parseInt(value.split('_')[1]);
                 activeGroupChatProjectId = projectId;
                 activeClassChatRecipientId = null;
+                startGroupChatAutoRefresh();
                 loadGroupChatMessages(projectId);
             } else if (value.startsWith('person_')) {
                 const recipientId = parseInt(value.split('_')[1]);
                 activeClassChatRecipientId = recipientId;
                 activeGroupChatProjectId = null;
+                stopGroupChatAutoRefresh();
                 loadClassChatHistory(recipientId);
             }
         });
@@ -197,6 +201,8 @@ async function handleLogout() {
             method: 'POST',
             credentials: 'include'
         });
+
+        stopGroupChatAutoRefresh();
 
         if (classSocket) {
             classSocket.disconnect();
@@ -1242,6 +1248,24 @@ async function loadGroupChatMessages(projectId) {
     } catch (error) {
         console.error('Error loading group chat messages:', error);
         renderGroupChatMessages([]);
+    }
+}
+
+function startGroupChatAutoRefresh() {
+    stopGroupChatAutoRefresh();
+
+    // Poll active project chat so messages sent in other windows appear automatically.
+    groupChatRefreshIntervalId = setInterval(() => {
+        if (activeGroupChatProjectId) {
+            loadGroupChatMessages(activeGroupChatProjectId);
+        }
+    }, 2000);
+}
+
+function stopGroupChatAutoRefresh() {
+    if (groupChatRefreshIntervalId) {
+        clearInterval(groupChatRefreshIntervalId);
+        groupChatRefreshIntervalId = null;
     }
 }
 
