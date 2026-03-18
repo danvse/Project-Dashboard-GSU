@@ -579,6 +579,11 @@ body {
     gap: 12px;
 }
 
+/* Keep the close button area clear in project modal header */
+#project-modal .modal-header {
+    padding-right: 56px;
+}
+
 /* Tabs */
 .project-tabs {
     display: flex;
