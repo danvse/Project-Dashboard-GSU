@@ -75,42 +75,42 @@ function initializeEventListeners() {
     // Create Project Form
     document.getElementById('create-project-form').addEventListener('submit', handleCreateProject);
 
-    // Class chat
+    // Class chat and group chat (unified)
     const classChatRecipient = document.getElementById('class-chat-recipient');
     const classChatForm = document.getElementById('class-chat-form');
     if (classChatRecipient) {
         classChatRecipient.addEventListener('change', (e) => {
-            const recipientId = parseInt(e.target.value);
-            if (recipientId) {
-                activeClassChatRecipientId = recipientId;
-                loadClassChatHistory(recipientId);
-            } else {
+            const value = e.target.value;
+            if (!value) {
                 activeClassChatRecipientId = null;
+                activeGroupChatProjectId = null;
                 renderClassChatMessages([]);
+                return;
+            }
+
+            // Determine if it's a project (format: "project_ID") or person (format: "person_ID")
+            if (value.startsWith('project_')) {
+                const projectId = parseInt(value.split('_')[1]);
+                activeGroupChatProjectId = projectId;
+                activeClassChatRecipientId = null;
+                loadGroupChatMessages(projectId);
+            } else if (value.startsWith('person_')) {
+                const recipientId = parseInt(value.split('_')[1]);
+                activeClassChatRecipientId = recipientId;
+                activeGroupChatProjectId = null;
+                loadClassChatHistory(recipientId);
             }
         });
     }
     if (classChatForm) {
-        classChatForm.addEventListener('submit', sendClassChatMessage);
-    }
-
-    // Group chat (project messaging)
-    const groupChatProject = document.getElementById('group-chat-project');
-    const groupChatForm = document.getElementById('group-chat-form');
-    if (groupChatProject) {
-        groupChatProject.addEventListener('change', (e) => {
-            const projectId = parseInt(e.target.value);
-            if (projectId) {
-                activeGroupChatProjectId = projectId;
-                loadGroupChatMessages(projectId);
+        classChatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            if (activeGroupChatProjectId) {
+                sendGroupChatMessage(e);
             } else {
-                activeGroupChatProjectId = null;
-                renderGroupChatMessages([]);
+                sendClassChatMessage(e);
             }
         });
-    }
-    if (groupChatForm) {
-        groupChatForm.addEventListener('submit', sendGroupChatMessage);
     }
 
     // Project Modal
@@ -322,6 +322,7 @@ function showView(viewName) {
         loadUserStories();
         loadClassInfo();
         loadClassChatContacts();
+        loadUserProjectsForChat();
     }
 }
 
@@ -892,10 +893,11 @@ function showProjectChatLockedState() {
     }
 }
 
-// Class Chat (Student <-> Faculty)
+// Class Chat (Student <-> Faculty) + Group Chat
 async function initializeClassChat() {
     classChatRetryCount = 0;
     await loadClassChatContacts();
+    await loadUserProjectsForChat();
     connectClassChatSocket();
 }
 
@@ -983,14 +985,50 @@ function renderClassChatContacts(contacts) {
     const input = document.getElementById('class-chat-input');
     if (!select || !input) return;
 
-    if (contacts.length === 0) {
+    // Combine contacts and projects
+    const allOptions = [];
+    
+    // Add people (faculty/students)
+    if (contacts && contacts.length > 0) {
+        allOptions.push({
+            type: 'person',
+            id: contacts[0].id,
+            name: contacts[0].name,
+            role: contacts[0].role
+        });
+        
+        contacts.forEach(contact => {
+            const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
+            allOptions.push({
+                type: 'person',
+                id: contact.id,
+                name: contact.name,
+                label: `${escapeHtml(contact.name)} (${roleLabel})`
+            });
+        });
+    }
+    
+    // Add projects  
+    if (userProjectsForChat && userProjectsForChat.length > 0) {
+        userProjectsForChat.forEach(project => {
+            allOptions.push({
+                type: 'project',
+                id: project.id,
+                name: project.name,
+                label: `👥 ${escapeHtml(project.name)} (${project.course})`
+            });
+        });
+    }
+
+    if (allOptions.length === 0) {
         const emptyLabel = currentUser && currentUser.role === 'student'
-            ? 'No professors available yet'
-            : 'No students available yet';
+            ? 'No conversations available yet'
+            : 'No conversations available yet';
         select.innerHTML = `<option value="">${emptyLabel}</option>`;
         select.disabled = true;
         input.disabled = true;
         activeClassChatRecipientId = null;
+        activeGroupChatProjectId = null;
         renderClassChatMessages([]);
 
         if (classChatRetryCount < 3) {
@@ -1005,15 +1043,30 @@ function renderClassChatContacts(contacts) {
     classChatRetryCount = 0;
     select.disabled = false;
     input.disabled = false;
-    select.innerHTML = contacts.map(contact => {
-        const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
-        return `<option value="${contact.id}">${escapeHtml(contact.name)} (${roleLabel})</option>`;
-    }).join('');
-
-    const selectedId = parseInt(select.value) || contacts[0].id;
-    select.value = String(selectedId);
-    activeClassChatRecipientId = selectedId;
-    loadClassChatHistory(selectedId);
+    
+    // Build the HTML options
+    let optionsHtml = '<option value="">Select a conversation...</option>';
+    
+    // Add person separator if there are people
+    if (contacts && contacts.length > 0) {
+        optionsHtml += '<optgroup label="Class Contacts">';
+        contacts.forEach(contact => {
+            const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
+            optionsHtml += `<option value="person_${contact.id}">${escapeHtml(contact.name)} (${roleLabel})</option>`;
+        });
+        optionsHtml += '</optgroup>';
+    }
+    
+    // Add project separator if there are projects
+    if (userProjectsForChat && userProjectsForChat.length > 0) {
+        optionsHtml += '<optgroup label="Project Teams">';
+        userProjectsForChat.forEach(project => {
+            optionsHtml += `<option value="project_${project.id}">👥 ${escapeHtml(project.name)} (${project.course})</option>`;
+        });
+        optionsHtml += '</optgroup>';
+    }
+    
+    select.innerHTML = optionsHtml;
 }
 
 async function loadClassChatHistory(recipientId) {
@@ -1139,40 +1192,11 @@ async function loadUserProjectsForChat() {
             p.team_members && p.team_members.some(m => m.id === currentUser.id)
         );
         
-        renderGroupChatProjectSelector();
+        // Re-render the chat contacts dropdown to include projects
+        renderClassChatContacts(classChatContacts);
     } catch (error) {
         console.error('Error loading user projects:', error);
-        renderGroupChatProjectSelector();
-    }
-}
-
-function renderGroupChatProjectSelector() {
-    const select = document.getElementById('group-chat-project');
-    const input = document.getElementById('group-chat-input');
-    if (!select || !input) return;
-
-    if (userProjectsForChat.length === 0) {
-        select.innerHTML = '<option value="">Join a project to chat with team members</option>';
-        select.disabled = true;
-        input.disabled = true;
-        activeGroupChatProjectId = null;
-        renderGroupChatMessages([]);
-        return;
-    }
-
-    select.disabled = false;
-    input.disabled = false;
-    select.innerHTML = userProjectsForChat.map(project => {
-        return `<option value="${project.id}">${escapeHtml(project.name)} (${project.course})</option>`;
-    }).join('');
-
-    if (!activeGroupChatProjectId && userProjectsForChat.length > 0) {
-        activeGroupChatProjectId = userProjectsForChat[0].id;
-        select.value = String(activeGroupChatProjectId);
-    }
-
-    if (activeGroupChatProjectId) {
-        loadGroupChatMessages(activeGroupChatProjectId);
+        renderClassChatContacts(classChatContacts);
     }
 }
 
