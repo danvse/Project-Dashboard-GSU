@@ -773,7 +773,7 @@ function displayMessages(messages) {
         <div class="message">
             <div class="message-header">
                 <span class="message-sender">${msg.sender.name}</span>
-                <span class="message-time">${new Date(msg.created_at).toLocaleString()}</span>
+                <span class="message-time">${formatServerTimestamp(msg.created_at)}</span>
             </div>
             <div class="message-content">${msg.content}</div>
         </div>
@@ -975,7 +975,7 @@ function renderClassChatMessages(messages) {
             <div class="message ${isOwn ? 'message-own' : ''}">
                 <div class="message-header">
                     <span class="message-sender">${escapeHtml(message.sender_name)}</span>
-                    <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+                    <span class="message-time">${formatServerTimestamp(message.created_at)}</span>
                 </div>
                 <div class="message-content">${escapeHtml(message.content)}</div>
             </div>
@@ -1000,7 +1000,7 @@ function appendClassChatMessage(message) {
     node.innerHTML = `
         <div class="message-header">
             <span class="message-sender">${escapeHtml(message.sender_name)}</span>
-            <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+            <span class="message-time">${formatServerTimestamp(message.created_at)}</span>
         </div>
         <div class="message-content">${escapeHtml(message.content)}</div>
     `;
@@ -1712,6 +1712,17 @@ function getTimeAgo(date) {
     }
     
     return 'Just now';
+}
+
+// Treat backend naive timestamps as UTC, then render in local timezone.
+function formatServerTimestamp(timestamp) {
+    if (!timestamp) return '';
+    const normalized = /z$/i.test(timestamp) ? timestamp : `${timestamp}Z`;
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) {
+        return String(timestamp);
+    }
+    return date.toLocaleString();
 }
 
 // Helper function to escape HTML
