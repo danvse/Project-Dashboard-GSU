@@ -189,13 +189,41 @@ async function handleLogout() {
     }
 }
 
-function checkAuthStatus() {
+async function checkAuthStatus() {
     const savedUser = localStorage.getItem('user');
-    if (savedUser) {
-        currentUser = JSON.parse(savedUser);
-        showDashboard();
-    } else {
+    if (!savedUser) {
         // Load available CRNs for registration
+        loadCRNs();
+        return;
+    }
+
+    try {
+        // Validate that the backend session is still active.
+        const response = await fetch(`${API_URL}/user/profile`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            throw new Error(`Auth check failed: ${response.status}`);
+        }
+
+        const profile = await response.json();
+        currentUser = {
+            id: profile.id,
+            username: profile.username,
+            email: profile.email,
+            first_name: profile.first_name,
+            last_name: profile.last_name,
+            role: profile.role
+        };
+
+        localStorage.setItem('user', JSON.stringify(currentUser));
+        showDashboard();
+    } catch (error) {
+        console.warn('Session expired or invalid, redirecting to login:', error);
+        currentUser = null;
+        localStorage.removeItem('user');
+        showPage('login-page');
         loadCRNs();
     }
 }
@@ -734,6 +762,7 @@ async function loadMessages(projectId) {
 
 function displayMessages(messages) {
     const container = document.getElementById('messages-list');
+    if (!container) return;
     
     if (messages.length === 0) {
         container.innerHTML = '<div class="empty-state"><h3>No messages yet</h3><p>Start the conversation!</p></div>';
@@ -756,6 +785,11 @@ function displayMessages(messages) {
 
 async function sendMessage(e) {
     e.preventDefault();
+
+    if (!currentProject) {
+        alert('Open a project first to send messages.');
+        return;
+    }
     
     const content = document.getElementById('message-input').value;
     
@@ -879,8 +913,9 @@ function renderClassChatContacts(contacts) {
             ? 'No professors available yet'
             : 'No students available yet';
         select.innerHTML = `<option value="">${emptyLabel}</option>`;
-        select.disabled = false;
+        select.disabled = true;
         input.disabled = true;
+        activeClassChatRecipientId = null;
         renderClassChatMessages([]);
 
         if (classChatRetryCount < 3) {
@@ -978,6 +1013,7 @@ async function sendClassChatMessage(e) {
     e.preventDefault();
 
     if (!activeClassChatRecipientId) {
+        alert('Select a conversation first.');
         return;
     }
 

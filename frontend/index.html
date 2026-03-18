@@ -325,6 +325,7 @@
                     <div class="project-tabs">
                         <button class="tab-btn active" data-tab="overview">Overview</button>
                         <button class="tab-btn" data-tab="team">Team</button>
+                        <button class="tab-btn" data-tab="messages">Messages</button>
                     </div>
 
                     <div class="tab-content active" id="overview-tab">
@@ -354,6 +355,16 @@
 
                     <div class="tab-content" id="team-tab">
                         <div id="team-members-list"></div>
+                    </div>
+
+                    <div class="tab-content" id="messages-tab">
+                        <div class="messages-container">
+                            <div id="messages-list"></div>
+                            <form id="message-form" class="message-form">
+                                <input type="text" id="message-input" placeholder="Type a message..." required>
+                                <button type="submit" class="btn btn-primary">Send</button>
+                            </form>
+                        </div>
                     </div>
 
 
