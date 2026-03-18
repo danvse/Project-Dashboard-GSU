@@ -301,12 +301,12 @@ def projects():
             'current_members': len(p.team_members),
             'team_members': [
                 {
-                    'id': m.id,
-                    'name': f"{m.first_name} {m.last_name}",
-                    'skills': m.skills,
-                    'joined_at': m.created_at.isoformat() if hasattr(m, 'created_at') else None
+                    'id': tm.student.id,
+                    'name': f"{tm.student.first_name} {tm.student.last_name}",
+                    'skills': tm.student.skills,
+                    'joined_at': tm.joined_at.isoformat()
                 }
-                for m in p.team_members
+                for tm in p.team_members
             ],
             'creator': {
                 'name': f"{p.creator.first_name} {p.creator.last_name}",
