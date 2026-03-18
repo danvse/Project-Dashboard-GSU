@@ -985,6 +985,11 @@ function renderClassChatContacts(contacts) {
     const input = document.getElementById('class-chat-input');
     if (!select || !input) return;
 
+    console.log('Rendering chat contacts:', {
+        contacts: contacts,
+        userProjectsForChat: userProjectsForChat
+    });
+
     // Combine contacts and projects
     const allOptions = [];
     
@@ -1066,6 +1071,7 @@ function renderClassChatContacts(contacts) {
         optionsHtml += '</optgroup>';
     }
     
+    console.log('Final options HTML:', optionsHtml);
     select.innerHTML = optionsHtml;
 }
 
@@ -1185,12 +1191,26 @@ async function loadUserProjectsForChat() {
             credentials: 'include'
         });
         
+        if (!response.ok) {
+            console.error('Failed to fetch projects for chat:', response.status);
+            renderClassChatContacts(classChatContacts);
+            return;
+        }
+        
         const allProjects = await response.json();
+        console.log('All projects:', allProjects);
+        console.log('Current user ID:', currentUser.id, 'Type:', typeof currentUser.id);
         
         // Filter projects where user is a member
-        userProjectsForChat = allProjects.filter(p => 
-            p.team_members && p.team_members.some(m => m.id === currentUser.id)
-        );
+        userProjectsForChat = allProjects.filter(p => {
+            if (!p.team_members) return false;
+            
+            // Handle both number and string IDs
+            const userId = String(currentUser.id);
+            return p.team_members.some(m => String(m.id) === userId);
+        });
+        
+        console.log('Filtered projects for chat:', userProjectsForChat);
         
         // Re-render the chat contacts dropdown to include projects
         renderClassChatContacts(classChatContacts);
