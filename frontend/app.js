@@ -1246,7 +1246,7 @@ async function loadGroupChatMessages(projectId) {
 }
 
 function renderGroupChatMessages(messages) {
-    const container = document.getElementById('group-chat-messages');
+    const container = document.getElementById('class-chat-messages');
     if (!container) return;
 
     if (!messages.length) {
@@ -1278,7 +1278,7 @@ async function sendGroupChatMessage(e) {
         return;
     }
 
-    const input = document.getElementById('group-chat-input');
+    const input = document.getElementById('class-chat-input');
     if (!input) return;
 
     const content = input.value.trim();
