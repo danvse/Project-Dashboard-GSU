@@ -754,8 +754,12 @@ async function joinProject() {
         
         if (response.ok) {
             alert('Successfully joined project!');
-            openProjectModal(currentProject.id);
-            loadProjects();
+            await openProjectModal(currentProject.id);
+            await loadProjects();
+
+            // Refresh unified messages dropdown so newly joined project chat appears immediately.
+            await loadUserProjectsForChat();
+            renderClassChatContacts(classChatContacts);
         } else {
             alert(data.error || 'Failed to join project');
         }
@@ -779,7 +783,11 @@ async function leaveProject() {
         if (response.ok) {
             alert('Successfully left project');
             document.getElementById('project-modal').classList.remove('active');
-            loadProjects();
+            await loadProjects();
+
+            // Refresh unified messages dropdown so departed project chat is removed immediately.
+            await loadUserProjectsForChat();
+            renderClassChatContacts(classChatContacts);
         } else {
             alert(data.error || 'Failed to leave project');
         }
@@ -1045,7 +1053,17 @@ function renderClassChatContacts(contacts) {
     // Keep user's current conversation selected when lists refresh.
     if (previousSelection && select.querySelector(`option[value="${previousSelection}"]`)) {
         select.value = previousSelection;
+        return;
     }
+
+    // If previous selection no longer exists (e.g., left a project), reset active chat state.
+    if (activeGroupChatProjectId) {
+        activeGroupChatProjectId = null;
+        stopGroupChatAutoRefresh();
+    }
+    activeClassChatRecipientId = null;
+    select.value = '';
+    renderClassChatMessages([]);
 }
 
 async function loadClassChatHistory(recipientId) {
