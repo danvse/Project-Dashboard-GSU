@@ -12,6 +12,10 @@ let classSocket = null;
 let classChatContacts = [];
 let activeClassChatRecipientId = null;
 let classChatRetryCount = 0;
+let canAccessProjectChat = false;
+let userProjectsForChat = [];
+let activeGroupChatProjectId = null;
+let groupChatRefreshIntervalId = null;
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
@@ -72,23 +76,45 @@ function initializeEventListeners() {
     // Create Project Form
     document.getElementById('create-project-form').addEventListener('submit', handleCreateProject);
 
-    // Class chat
+    // Class chat and group chat (unified)
     const classChatRecipient = document.getElementById('class-chat-recipient');
     const classChatForm = document.getElementById('class-chat-form');
     if (classChatRecipient) {
         classChatRecipient.addEventListener('change', (e) => {
-            const recipientId = parseInt(e.target.value);
-            if (recipientId) {
-                activeClassChatRecipientId = recipientId;
-                loadClassChatHistory(recipientId);
-            } else {
+            const value = e.target.value;
+            if (!value) {
                 activeClassChatRecipientId = null;
+                activeGroupChatProjectId = null;
+                stopGroupChatAutoRefresh();
                 renderClassChatMessages([]);
+                return;
+            }
+
+            // Determine if it's a project (format: "project_ID") or person (format: "person_ID")
+            if (value.startsWith('project_')) {
+                const projectId = parseInt(value.split('_')[1]);
+                activeGroupChatProjectId = projectId;
+                activeClassChatRecipientId = null;
+                startGroupChatAutoRefresh();
+                loadGroupChatMessages(projectId);
+            } else if (value.startsWith('person_')) {
+                const recipientId = parseInt(value.split('_')[1]);
+                activeClassChatRecipientId = recipientId;
+                activeGroupChatProjectId = null;
+                stopGroupChatAutoRefresh();
+                loadClassChatHistory(recipientId);
             }
         });
     }
     if (classChatForm) {
-        classChatForm.addEventListener('submit', sendClassChatMessage);
+        classChatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            if (activeGroupChatProjectId) {
+                sendGroupChatMessage(e);
+            } else {
+                sendClassChatMessage(e);
+            }
+        });
     }
 
     // Project Modal
@@ -176,6 +202,8 @@ async function handleLogout() {
             credentials: 'include'
         });
 
+        stopGroupChatAutoRefresh();
+
         if (classSocket) {
             classSocket.disconnect();
             classSocket = null;
@@ -189,13 +217,41 @@ async function handleLogout() {
     }
 }
 
-function checkAuthStatus() {
+async function checkAuthStatus() {
     const savedUser = localStorage.getItem('user');
-    if (savedUser) {
-        currentUser = JSON.parse(savedUser);
-        showDashboard();
-    } else {
+    if (!savedUser) {
         // Load available CRNs for registration
+        loadCRNs();
+        return;
+    }
+
+    try {
+        // Validate that the backend session is still active.
+        const response = await fetch(`${API_URL}/user/profile`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            throw new Error(`Auth check failed: ${response.status}`);
+        }
+
+        const profile = await response.json();
+        currentUser = {
+            id: profile.id,
+            username: profile.username,
+            email: profile.email,
+            first_name: profile.first_name,
+            last_name: profile.last_name,
+            role: profile.role
+        };
+
+        localStorage.setItem('user', JSON.stringify(currentUser));
+        showDashboard();
+    } catch (error) {
+        console.warn('Session expired or invalid, redirecting to login:', error);
+        currentUser = null;
+        localStorage.removeItem('user');
+        showPage('login-page');
         loadCRNs();
     }
 }
@@ -217,6 +273,7 @@ function showDashboard() {
     loadStudents();
     loadUserProfile();
     initializeClassChat();
+    loadUserProjectsForChat();
     showView('overview');
 }
 
@@ -271,6 +328,7 @@ function showView(viewName) {
         loadUserStories();
         loadClassInfo();
         loadClassChatContacts();
+        loadUserProjectsForChat();
     }
 }
 
@@ -571,7 +629,11 @@ function setupProjectModal() {
             
             // Load tab-specific data
             if (tabName === 'messages') {
-                loadMessages(currentProject.id);
+                if (canAccessProjectChat) {
+                    loadMessages(currentProject.id);
+                } else {
+                    showProjectChatLockedState();
+                }
             } else if (tabName === 'tasks') {
                 loadTasks(currentProject.id);
             } else if (tabName === 'milestones') {
@@ -611,9 +673,11 @@ async function openProjectModal(projectId) {
         // Update join/leave buttons visibility
         const joinBtn = document.getElementById('join-project-btn');
         const leaveBtn = document.getElementById('leave-project-btn');
+        const isMember = currentProject.team_members.some(m => m.id === currentUser.id);
+        const isCreator = currentProject.creator.id === currentUser.id;
+        canAccessProjectChat = isMember || isCreator;
         
         if (currentUser.role === 'student') {
-            const isMember = currentProject.team_members.some(m => m.id === currentUser.id);
             const isFull = currentProject.status === 'full';
             
             // Show join button if: not a member AND project not full
@@ -639,6 +703,13 @@ async function openProjectModal(projectId) {
         
         // Load team members
         displayTeamMembers(currentProject.team_members);
+
+        // Prepare project chat access state
+        if (canAccessProjectChat) {
+            loadMessages(currentProject.id);
+        } else {
+            showProjectChatLockedState();
+        }
         
         // Show modal
         document.getElementById('project-modal').classList.add('active');
@@ -683,8 +754,12 @@ async function joinProject() {
         
         if (response.ok) {
             alert('Successfully joined project!');
-            openProjectModal(currentProject.id);
-            loadProjects();
+            await openProjectModal(currentProject.id);
+            await loadProjects();
+
+            // Refresh unified messages dropdown so newly joined project chat appears immediately.
+            await loadUserProjectsForChat();
+            renderClassChatContacts(classChatContacts);
         } else {
             alert(data.error || 'Failed to join project');
         }
@@ -708,7 +783,11 @@ async function leaveProject() {
         if (response.ok) {
             alert('Successfully left project');
             document.getElementById('project-modal').classList.remove('active');
-            loadProjects();
+            await loadProjects();
+
+            // Refresh unified messages dropdown so departed project chat is removed immediately.
+            await loadUserProjectsForChat();
+            renderClassChatContacts(classChatContacts);
         } else {
             alert(data.error || 'Failed to leave project');
         }
@@ -724,6 +803,11 @@ async function loadMessages(projectId) {
         const response = await fetch(`${API_URL}/projects/${projectId}/messages`, {
             credentials: 'include'
         });
+
+        if (!response.ok) {
+            showProjectChatLockedState();
+            return;
+        }
         
         const messages = await response.json();
         displayMessages(messages);
@@ -734,6 +818,17 @@ async function loadMessages(projectId) {
 
 function displayMessages(messages) {
     const container = document.getElementById('messages-list');
+    if (!container) return;
+
+    const input = document.getElementById('message-input');
+    const form = document.getElementById('message-form');
+    if (input) {
+        input.disabled = false;
+        input.placeholder = 'Type a message...';
+    }
+    if (form) {
+        form.classList.remove('disabled');
+    }
     
     if (messages.length === 0) {
         container.innerHTML = '<div class="empty-state"><h3>No messages yet</h3><p>Start the conversation!</p></div>';
@@ -744,7 +839,7 @@ function displayMessages(messages) {
         <div class="message">
             <div class="message-header">
                 <span class="message-sender">${msg.sender.name}</span>
-                <span class="message-time">${new Date(msg.created_at).toLocaleString()}</span>
+                <span class="message-time">${formatServerTimestamp(msg.created_at)}</span>
             </div>
             <div class="message-content">${msg.content}</div>
         </div>
@@ -756,6 +851,16 @@ function displayMessages(messages) {
 
 async function sendMessage(e) {
     e.preventDefault();
+
+    if (!currentProject) {
+        alert('Open a project first to send messages.');
+        return;
+    }
+
+    if (!canAccessProjectChat) {
+        alert('Join this project to participate in team chat.');
+        return;
+    }
     
     const content = document.getElementById('message-input').value;
     
@@ -783,9 +888,31 @@ async function sendMessage(e) {
     }
 }
 
-// Class Chat (Student <-> Faculty)
+function showProjectChatLockedState() {
+    const list = document.getElementById('messages-list');
+    const input = document.getElementById('message-input');
+    const form = document.getElementById('message-form');
+
+    if (list) {
+        list.innerHTML = '<div class="empty-state"><h3>Join this project to chat</h3><p>Project team members can view and send messages here.</p></div>';
+    }
+
+    if (input) {
+        input.disabled = true;
+        input.placeholder = 'Join this project to send messages';
+    }
+
+    if (form) {
+        form.classList.add('disabled');
+    }
+}
+
+// Class Chat (Student <-> Faculty) + Group Chat
 async function initializeClassChat() {
     classChatRetryCount = 0;
+    // Load projects FIRST before rendering contacts dropdown
+    await loadUserProjectsForChat();
+    // Then load contacts
     await loadClassChatContacts();
     connectClassChatSocket();
 }
@@ -874,13 +1001,16 @@ function renderClassChatContacts(contacts) {
     const input = document.getElementById('class-chat-input');
     if (!select || !input) return;
 
-    if (contacts.length === 0) {
-        const emptyLabel = currentUser && currentUser.role === 'student'
-            ? 'No professors available yet'
-            : 'No students available yet';
-        select.innerHTML = `<option value="">${emptyLabel}</option>`;
-        select.disabled = false;
+    const hasPeople = Array.isArray(contacts) && contacts.length > 0;
+    const hasProjects = Array.isArray(userProjectsForChat) && userProjectsForChat.length > 0;
+    const previousSelection = select.value;
+
+    if (!hasPeople && !hasProjects) {
+        select.innerHTML = '<option value="">No conversations available yet</option>';
+        select.disabled = true;
         input.disabled = true;
+        activeClassChatRecipientId = null;
+        activeGroupChatProjectId = null;
         renderClassChatMessages([]);
 
         if (classChatRetryCount < 3) {
@@ -895,15 +1025,45 @@ function renderClassChatContacts(contacts) {
     classChatRetryCount = 0;
     select.disabled = false;
     input.disabled = false;
-    select.innerHTML = contacts.map(contact => {
-        const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
-        return `<option value="${contact.id}">${escapeHtml(contact.name)} (${roleLabel})</option>`;
-    }).join('');
+    
+    // Build the HTML options
+    let optionsHtml = '<option value="">Select a conversation...</option>';
+    
+    // Add person separator if there are people
+    if (hasPeople) {
+        optionsHtml += '<optgroup label="Class Contacts">';
+        contacts.forEach(contact => {
+            const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
+            optionsHtml += `<option value="person_${contact.id}">${escapeHtml(contact.name)} (${roleLabel})</option>`;
+        });
+        optionsHtml += '</optgroup>';
+    }
+    
+    // Add project separator if there are projects
+    if (hasProjects) {
+        optionsHtml += '<optgroup label="Project Teams">';
+        userProjectsForChat.forEach(project => {
+            optionsHtml += `<option value="project_${project.id}">👥 ${escapeHtml(project.name)} (${project.course})</option>`;
+        });
+        optionsHtml += '</optgroup>';
+    }
+    
+    select.innerHTML = optionsHtml;
 
-    const selectedId = parseInt(select.value) || contacts[0].id;
-    select.value = String(selectedId);
-    activeClassChatRecipientId = selectedId;
-    loadClassChatHistory(selectedId);
+    // Keep user's current conversation selected when lists refresh.
+    if (previousSelection && select.querySelector(`option[value="${previousSelection}"]`)) {
+        select.value = previousSelection;
+        return;
+    }
+
+    // If previous selection no longer exists (e.g., left a project), reset active chat state.
+    if (activeGroupChatProjectId) {
+        activeGroupChatProjectId = null;
+        stopGroupChatAutoRefresh();
+    }
+    activeClassChatRecipientId = null;
+    select.value = '';
+    renderClassChatMessages([]);
 }
 
 async function loadClassChatHistory(recipientId) {
@@ -940,7 +1100,7 @@ function renderClassChatMessages(messages) {
             <div class="message ${isOwn ? 'message-own' : ''}">
                 <div class="message-header">
                     <span class="message-sender">${escapeHtml(message.sender_name)}</span>
-                    <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+                    <span class="message-time">${formatServerTimestamp(message.created_at)}</span>
                 </div>
                 <div class="message-content">${escapeHtml(message.content)}</div>
             </div>
@@ -965,7 +1125,7 @@ function appendClassChatMessage(message) {
     node.innerHTML = `
         <div class="message-header">
             <span class="message-sender">${escapeHtml(message.sender_name)}</span>
-            <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+            <span class="message-time">${formatServerTimestamp(message.created_at)}</span>
         </div>
         <div class="message-content">${escapeHtml(message.content)}</div>
     `;
@@ -978,6 +1138,7 @@ async function sendClassChatMessage(e) {
     e.preventDefault();
 
     if (!activeClassChatRecipientId) {
+        alert('Select a conversation first.');
         return;
     }
 
@@ -1010,6 +1171,158 @@ async function sendClassChatMessage(e) {
         await loadClassChatHistory(activeClassChatRecipientId);
     } catch (error) {
         console.error('Error sending class message:', error);
+        alert('An error occurred while sending your message.');
+    }
+}
+
+// Group Chat (Project Team Messaging)
+async function loadUserProjectsForChat() {
+    try {
+        const response = await fetch(`${API_URL}/projects`, {
+            credentials: 'include'
+        });
+        
+        if (!response.ok) {
+            console.error('Failed to fetch projects for chat:', response.status);
+            userProjectsForChat = [];
+            return;
+        }
+        
+        const allProjects = await response.json();
+
+        // Project list responses may omit team_members; fetch details per project for reliable membership checks.
+        const projectDetails = await Promise.all(
+            allProjects.map(async (project) => {
+                try {
+                    const detailResponse = await fetch(`${API_URL}/projects/${project.id}`, {
+                        credentials: 'include'
+                    });
+
+                    if (!detailResponse.ok) {
+                        return null;
+                    }
+
+                    return await detailResponse.json();
+                } catch (error) {
+                    console.error(`Failed to load project details for ${project.id}:`, error);
+                    return null;
+                }
+            })
+        );
+
+        const userId = String(currentUser.id);
+        userProjectsForChat = projectDetails.filter(project =>
+            project && Array.isArray(project.team_members) &&
+            project.team_members.some(member => String(member.id) === userId)
+        );
+    } catch (error) {
+        console.error('Error loading user projects:', error);
+        userProjectsForChat = [];
+    }
+}
+
+async function loadGroupChatMessages(projectId) {
+    try {
+        const response = await fetch(`${API_URL}/projects/${projectId}/messages`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            renderGroupChatMessages([]);
+            return;
+        }
+        
+        const messages = await response.json();
+
+        // Ignore late responses if the user switched to a different conversation.
+        if (activeGroupChatProjectId !== projectId) {
+            return;
+        }
+
+        renderGroupChatMessages(messages);
+    } catch (error) {
+        console.error('Error loading group chat messages:', error);
+        renderGroupChatMessages([]);
+    }
+}
+
+function startGroupChatAutoRefresh() {
+    stopGroupChatAutoRefresh();
+
+    // Poll active project chat so messages sent in other windows appear automatically.
+    groupChatRefreshIntervalId = setInterval(() => {
+        if (activeGroupChatProjectId) {
+            loadGroupChatMessages(activeGroupChatProjectId);
+        }
+    }, 2000);
+}
+
+function stopGroupChatAutoRefresh() {
+    if (groupChatRefreshIntervalId) {
+        clearInterval(groupChatRefreshIntervalId);
+        groupChatRefreshIntervalId = null;
+    }
+}
+
+function renderGroupChatMessages(messages) {
+    const container = document.getElementById('class-chat-messages');
+    if (!container) return;
+
+    if (!messages.length) {
+        container.innerHTML = '<div class="empty-state"><h3>No messages yet</h3><p>Start the conversation!</p></div>';
+        return;
+    }
+
+    container.innerHTML = messages.map(msg => {
+        const isOwn = currentUser && msg.sender_id === currentUser.id;
+        return `
+            <div class="message ${isOwn ? 'message-own' : ''}">
+                <div class="message-header">
+                    <span class="message-sender">${escapeHtml(msg.sender.name)}</span>
+                    <span class="message-time">${formatServerTimestamp(msg.created_at)}</span>
+                </div>
+                <div class="message-content">${escapeHtml(msg.content)}</div>
+            </div>
+        `;
+    }).join('');
+
+    container.scrollTop = container.scrollHeight;
+}
+
+async function sendGroupChatMessage(e) {
+    e.preventDefault();
+
+    if (!activeGroupChatProjectId) {
+        alert('Select a project first.');
+        return;
+    }
+
+    const input = document.getElementById('class-chat-input');
+    if (!input) return;
+
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+        const response = await fetch(`${API_URL}/projects/${activeGroupChatProjectId}/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({ content, message_type: 'group' })
+        });
+
+        if (!response.ok) {
+            const errorPayload = await response.json();
+            alert(errorPayload.error || 'Failed to send message');
+            return;
+        }
+
+        input.value = '';
+        await loadGroupChatMessages(activeGroupChatProjectId);
+    } catch (error) {
+        console.error('Error sending group message:', error);
         alert('An error occurred while sending your message.');
     }
 }
@@ -1676,6 +1989,17 @@ function getTimeAgo(date) {
     }
     
     return 'Just now';
+}
+
+// Treat backend naive timestamps as UTC, then render in local timezone.
+function formatServerTimestamp(timestamp) {
+    if (!timestamp) return '';
+    const normalized = /z$/i.test(timestamp) ? timestamp : `${timestamp}Z`;
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) {
+        return String(timestamp);
+    }
+    return date.toLocaleString();
 }
 
 // Helper function to escape HTML
