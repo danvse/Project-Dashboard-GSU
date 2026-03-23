@@ -83,13 +83,6 @@
                             <input type="password" id="password" required>
                         </div>
 
-                        <!-- Student-specific fields -->
-                        <div id="student-fields" style="display: none;">
-                            <div class="form-group">
-                                <label for="crn">CRN</label>
-                                <input type="text" id="crn">
-                            </div>
-                        </div>
 
                         <!-- Faculty-specific fields -->
                         <div id="faculty-fields" style="display: none;">
@@ -117,7 +110,8 @@
                 <div class="nav-menu">
                     <a href="#" class="nav-link active" data-view="overview">Dashboard</a>
                     <a href="#" class="nav-link" data-view="projects">Projects</a>
-                    <a href="#" class="nav-link" data-view="students">Find Students</a>
+                    <a href="#" class="nav-link" data-view="students">Students</a>
+                    <a href="#" class="nav-link" data-view="faculty">Faculty</a>
                     <a href="#" class="nav-link" data-view="profile">Profile</a>
                 </div>
                 <div class="nav-user">
@@ -132,6 +126,70 @@
                     <div class="welcome-section">
                         <h1>Welcome, <span id="welcome-name"></span>!</h1>
                         <p>Manage your capstone projects and collaborate with your team</p>
+                    </div>
+
+                    <!-- Class Information Card -->
+                    <div class="class-info-card">
+                        <h2>📚 My Class</h2>
+                        <div id="class-info-content" class="class-info-content"></div>
+                    </div>
+
+                    <!-- Join Class Card (Students without a class) -->
+                    <div id="join-class-card" class="join-class-card student-only" style="display:none;">
+                        <div class="join-class-inner">
+                            <div class="join-class-icon">🎓</div>
+                            <div class="join-class-text">
+                                <h3>You haven't joined a class yet</h3>
+                                <p>Enter the CRN code provided by your professor to enroll.</p>
+                            </div>
+                        </div>
+                        <div class="join-class-form">
+                            <input type="text" id="join-crn-input" placeholder="Enter CRN (e.g., 12345)" maxlength="20" onkeydown="if(event.key==='Enter') joinClass()">
+                            <button class="btn btn-primary" onclick="joinClass()">Join Class</button>
+                        </div>
+                        <div id="join-class-feedback" class="join-class-feedback" style="display:none;"></div>
+                    </div>
+
+                    <!-- User Stories / Announcements Section -->
+                    <div class="announcements-section">
+                        <div class="section-header">
+                            <h2>📢 Announcements & Updates</h2>
+                            <button class="btn btn-primary btn-sm" onclick="showCreateUserStory()">+ New Announcement</button>
+                        </div>
+                        <div id="user-stories-list" class="user-stories-container"></div>
+                    </div>
+
+                    <div class="class-chat-section">
+                        <div class="section-header">
+                            <h2>💬 Messages</h2>
+                            <small style="color: var(--text-secondary); font-weight: normal;">Message faculty, students, or project teams</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="class-chat-recipient">Select Conversation</label>
+                            <select id="class-chat-recipient"></select>
+                        </div>
+                        <div id="class-chat-messages" class="messages-list class-chat-messages"></div>
+                        <form id="class-chat-form" class="message-form">
+                            <input type="text" id="class-chat-input" placeholder="Type a message..." maxlength="1000" required>
+                            <button type="submit" class="btn btn-primary">Send</button>
+                        </form>
+                    </div>
+
+                    <!-- Calendar Section (Students Only) -->
+                    <div class="calendar-section student-only">
+                        <h2>📅 Assignment Calendar</h2>
+                        <div id="calendar-container">
+                            <div class="calendar-header">
+                                <button class="btn btn-sm" onclick="previousMonth()">←</button>
+                                <h3 id="calendar-month-year"></h3>
+                                <button class="btn btn-sm" onclick="nextMonth()">→</button>
+                            </div>
+                            <div id="calendar-grid" class="calendar-grid"></div>
+                            <div class="calendar-legend">
+                                <span class="legend-item"><span class="legend-dot red"></span> Assignment Due</span>
+                                <span class="legend-item"><span class="legend-dot blue"></span> Today</span>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="stats-grid">
@@ -154,7 +212,8 @@
                         <div class="action-buttons">
                             <button class="btn btn-primary" onclick="showView('projects')">Browse Projects</button>
                             <button class="btn btn-primary" onclick="showView('students')">Find Teammates</button>
-                            <button class="btn btn-primary faculty-only" onclick="showCreateProject()">Create Project</button>
+                            <button class="btn btn-primary faculty-only" onclick="showCreateProject()">+ Create Project</button>
+                            <button class="btn btn-primary btn-create-class faculty-only" onclick="showCreateClass()">🎓 Create Class</button>
                         </div>
                     </div>
 
@@ -193,6 +252,16 @@
                     <div id="students-grid" class="students-grid"></div>
                 </div>
 
+                <!-- Faculty View -->
+                <div id="faculty-view" class="dashboard-view">
+                    <div class="view-header">
+                        <h1>Faculty Members</h1>
+                        <p>Professors and instructors in your class</p>
+                    </div>
+
+                    <div id="faculty-grid" class="faculty-grid"></div>
+                </div>
+
                 <!-- Profile View -->
                 <div id="profile-view" class="dashboard-view">
                     <div class="view-header">
@@ -224,6 +293,19 @@
                             <button type="submit" class="btn btn-primary">Update Profile</button>
                         </form>
                     </div>
+
+                    <!-- CRN Management Section (Faculty Only) -->
+                    <div class="profile-card faculty-only" style="margin-top: 2rem;">
+                        <div class="class-mgmt-header">
+                            <div>
+                                <h2>Class Management</h2>
+                                <p class="class-mgmt-subtitle">Create and manage your courses</p>
+                            </div>
+                            <button class="btn btn-primary" onclick="showCreateClass()">+ Create Class</button>
+                        </div>
+
+                        <div id="crn-list" class="crn-list"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -235,8 +317,8 @@
                 <div class="modal-header">
                     <h2 id="project-modal-title"></h2>
                     <div class="project-actions">
-                        <button id="join-project-btn" class="btn btn-primary student-only">Join Project</button>
-                        <button id="leave-project-btn" class="btn btn-danger student-only" style="display: none;">Leave Project</button>
+                        <button id="join-project-btn" class="btn btn-primary" style="display: none;">Join Project</button>
+                        <button id="leave-project-btn" class="btn btn-danger" style="display: none;">Leave Project</button>
                     </div>
                 </div>
                 
@@ -244,6 +326,7 @@
                     <div class="project-tabs">
                         <button class="tab-btn active" data-tab="overview">Overview</button>
                         <button class="tab-btn" data-tab="team">Team</button>
+                        <button class="tab-btn" data-tab="messages">Messages</button>
                     </div>
 
                     <div class="tab-content active" id="overview-tab">
@@ -273,6 +356,16 @@
 
                     <div class="tab-content" id="team-tab">
                         <div id="team-members-list"></div>
+                    </div>
+
+                    <div class="tab-content" id="messages-tab">
+                        <div class="messages-container">
+                            <div id="messages-list"></div>
+                            <form id="message-form" class="message-form">
+                                <input type="text" id="message-input" placeholder="Type a message..." required>
+                                <button type="submit" class="btn btn-primary">Send</button>
+                            </form>
+                        </div>
                     </div>
 
 
@@ -356,8 +449,166 @@
                 </form>
             </div>
         </div>
+
+        <!-- Create User Story / Announcement Modal -->
+        <div id="create-userstory-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Create Announcement</h2>
+                <form id="create-userstory-form">
+                    <div class="form-group">
+                        <label for="new-story-project">Audience</label>
+                        <select id="new-story-project">
+                            <option value="">Select a project</option>
+                        </select>
+                        <small class="student-only">Select which project team should see this announcement</small>
+                        <small class="faculty-only">Leave blank to send to all students in your class, or select a specific project</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-story-title">Title</label>
+                        <input type="text" id="new-story-title" required placeholder="Enter announcement title">
+                    </div>
+                    <div class="form-group">
+                        <label for="new-story-content">Content</label>
+                        <textarea id="new-story-content" rows="6" required placeholder="Write your announcement here..."></textarea>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="new-story-type">Type</label>
+                            <select id="new-story-type">
+                                <option value="announcement">Announcement</option>
+                                <option value="update">Update</option>
+                                <option value="milestone">Milestone</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="new-story-priority">Priority</label>
+                            <select id="new-story-priority">
+                                <option value="normal">Normal</option>
+                                <option value="high">High</option>
+                                <option value="low">Low</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Post Announcement</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Create Class Modal -->
+        <div id="create-class-modal" class="modal">
+            <div class="modal-content create-class-modal-content">
+                <span class="close">&times;</span>
+
+                <div class="create-class-header">
+                    <div class="create-class-icon">🎓</div>
+                    <div>
+                        <h2>Create New Class</h2>
+                        <p class="create-class-subtitle">Fill in the details below to set up your course</p>
+                    </div>
+                </div>
+
+                <form id="create-class-form" novalidate>
+
+                    <!-- Section 1: Core Info -->
+                    <div class="create-class-section">
+                        <h3 class="create-class-section-title">Course Information</h3>
+                        <div class="create-class-grid">
+                            <div class="form-group">
+                                <label for="new-class-crn">CRN <span class="required">*</span></label>
+                                <input type="text" id="new-class-crn" required placeholder="e.g., 12345" maxlength="10">
+                                <small>Unique Course Registration Number</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="new-class-section">Section</label>
+                                <input type="text" id="new-class-section" placeholder="e.g., 001" maxlength="5">
+                                <small>Optional section identifier</small>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="new-class-name">Course Name <span class="required">*</span></label>
+                            <input type="text" id="new-class-name" required placeholder="e.g., CS 4800 - Software Engineering">
+                            <small>Full name as it appears in the course catalog</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="new-class-description">Course Description</label>
+                            <textarea id="new-class-description" rows="3" placeholder="Briefly describe what students will learn in this course..."></textarea>
+                        </div>
+                    </div>
+
+                    <!-- Section 2: Schedule -->
+                    <div class="create-class-section">
+                        <h3 class="create-class-section-title">Schedule &amp; Term</h3>
+                        <div class="create-class-grid">
+                            <div class="form-group">
+                                <label for="new-class-semester">Semester <span class="required">*</span></label>
+                                <select id="new-class-semester" required>
+                                    <option value="" disabled selected>Select semester</option>
+                                    <option value="Spring 2025">Spring 2025</option>
+                                    <option value="Summer 2025">Summer 2025</option>
+                                    <option value="Fall 2025">Fall 2025</option>
+                                    <option value="Spring 2026">Spring 2026</option>
+                                    <option value="Summer 2026">Summer 2026</option>
+                                    <option value="Fall 2026">Fall 2026</option>
+                                </select>
+                                <small>Academic term for this class</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="new-class-capacity">Max Capacity</label>
+                                <input type="number" id="new-class-capacity" placeholder="e.g., 30" min="1" max="500">
+                                <small>Maximum number of students</small>
+                            </div>
+                        </div>
+
+                        <div class="create-class-grid">
+                            <div class="form-group">
+                                <label for="new-class-start">Start Date</label>
+                                <input type="date" id="new-class-start">
+                            </div>
+                            <div class="form-group">
+                                <label for="new-class-end">End Date</label>
+                                <input type="date" id="new-class-end">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section 3: Meeting Info -->
+                    <div class="create-class-section">
+                        <h3 class="create-class-section-title">Meeting Details</h3>
+                        <div class="create-class-grid">
+                            <div class="form-group">
+                                <label for="new-class-days">Meeting Days</label>
+                                <select id="new-class-days">
+                                    <option value="" disabled selected>Select days</option>
+                                    <option value="MWF">Mon / Wed / Fri</option>
+                                    <option value="TR">Tue / Thu</option>
+                                    <option value="MW">Mon / Wed</option>
+                                    <option value="Online">Online / Async</option>
+                                    <option value="Other">Other</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="new-class-location">Room / Location</label>
+                                <input type="text" id="new-class-location" placeholder="e.g., College of Business 101">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="create-class-actions">
+                        <button type="button" class="btn btn-secondary" id="cancel-create-class">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="submit-create-class">
+                            <span class="btn-icon">✚</span> Create Class
+                        </button>
+                    </div>
+
+                </form>
+            </div>
+        </div>
     </div>
 
-    <script src="app.js"></script>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <script src="app.js?v=20260228-chatfix2"></script>
 </body>
 </html>

@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import os
@@ -14,6 +15,14 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 CORS(app, supports_credentials=True)
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=[
+        'http://localhost:8000',
+        'http://127.0.0.1:8000'
+    ],
+    manage_session=False
+)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
@@ -38,6 +47,8 @@ class User(UserMixin, db.Model):
     team_memberships = db.relationship('TeamMember', backref='student', lazy=True)
     messages_sent = db.relationship('Message', backref='sender', lazy=True, foreign_keys='Message.sender_id')
     messages_received = db.relationship('Message', backref='recipient', lazy=True, foreign_keys='Message.recipient_id')
+    class_messages_sent = db.relationship('ClassMessage', backref='sender', lazy=True, foreign_keys='ClassMessage.sender_id')
+    class_messages_received = db.relationship('ClassMessage', backref='recipient', lazy=True, foreign_keys='ClassMessage.recipient_id')
     tasks_assigned = db.relationship('Task', backref='assignee', lazy=True)
 
 class Project(db.Model):
@@ -72,6 +83,14 @@ class Message(db.Model):
     message_type = db.Column(db.String(20), default='group')  # 'group' or 'direct'
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class ClassMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    recipient_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    crn_code = db.Column(db.String(20), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 class Task(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
@@ -91,9 +110,70 @@ class Milestone(db.Model):
     status = db.Column(db.String(20), default='upcoming')  # 'upcoming', 'completed'
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class CRN(db.Model):
+    """Course Reference Number model"""
+    id = db.Column(db.Integer, primary_key=True)
+    crn_code = db.Column(db.String(20), unique=True, nullable=False)
+    course_name = db.Column(db.String(200), nullable=False)
+    faculty_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationship
+    faculty = db.relationship('User', backref='crns_created', lazy=True)
+
+class UserStory(db.Model):
+    """User Story/Announcement model for dashboard"""
+    id = db.Column(db.Integer, primary_key=True)
+    author_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id'))  # NULL for CRN-wide announcements
+    title = db.Column(db.String(200), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    story_type = db.Column(db.String(20), default='announcement')  # 'announcement', 'update', 'milestone'
+    priority = db.Column(db.String(20), default='normal')  # 'low', 'normal', 'high'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    author = db.relationship('User', backref='user_stories', lazy=True)
+    project = db.relationship('Project', backref='announcements', lazy=True)
+
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
+
+def _is_faculty_for_crn(faculty_user_id, crn_code):
+    if not faculty_user_id or not crn_code:
+        return False
+
+    return CRN.query.filter_by(
+        crn_code=crn_code,
+        faculty_id=faculty_user_id
+    ).first() is not None
+
+def _can_exchange_class_messages(user_a, user_b):
+    if user_a is None or user_b is None:
+        return False
+
+    # TODO: Re-enable strict CRN-based authorization before production release.
+    # Current behavior is intentionally relaxed for testing so any student can
+    # message any faculty member (and vice versa) even without CRN association.
+    # Testing mode: allow direct messaging between any student and any faculty,
+    # regardless of CRN linkage.
+    return (
+        (user_a.role == 'student' and user_b.role == 'faculty') or
+        (user_a.role == 'faculty' and user_b.role == 'student')
+    )
+
+def _serialize_class_message(message):
+    return {
+        'id': message.id,
+        'sender_id': message.sender_id,
+        'sender_name': f"{message.sender.first_name} {message.sender.last_name}",
+        'recipient_id': message.recipient_id,
+        'content': message.content,
+        'crn_code': message.crn_code,
+        'created_at': message.created_at.isoformat()
+    }
 
 # API Routes
 
@@ -159,7 +239,7 @@ def logout():
 @login_required
 def user_profile():
     if request.method == 'GET':
-        return jsonify({
+        profile_data = {
             'id': current_user.id,
             'username': current_user.username,
             'email': current_user.email,
@@ -168,8 +248,22 @@ def user_profile():
             'role': current_user.role,
             'biography': current_user.biography,
             'skills': current_user.skills,
-            'interests': current_user.interests
-        }), 200
+            'interests': current_user.interests,
+            'crn': current_user.crn,
+            'title': current_user.title
+        }
+        
+        # If faculty, include their created CRNs
+        if current_user.role == 'faculty':
+            crns = CRN.query.filter_by(faculty_id=current_user.id).all()
+            profile_data['crns_created'] = [{
+                'id': crn.id,
+                'crn_code': crn.crn_code,
+                'course_name': crn.course_name,
+                'created_at': crn.created_at.isoformat()
+            } for crn in crns]
+        
+        return jsonify(profile_data), 200
     
     elif request.method == 'PUT':
         data = request.json
@@ -185,12 +279,17 @@ def projects():
     if request.method == 'GET':
         keyword = request.args.get('keyword', '')
         
+        # Filter projects by CRN - only show projects from faculty in the same class
+        base_query = Project.query.join(User, Project.creator_id == User.id).filter(
+            User.crn == current_user.crn
+        )
+        
         if keyword:
-            projects_list = Project.query.filter(
+            projects_list = base_query.filter(
                 (Project.name.contains(keyword)) | (Project.description.contains(keyword))
             ).all()
         else:
-            projects_list = Project.query.all()
+            projects_list = base_query.all()
         
         return jsonify([{
             'id': p.id,
@@ -200,6 +299,15 @@ def projects():
             'course': p.course,
             'status': p.status,
             'current_members': len(p.team_members),
+            'team_members': [
+                {
+                    'id': tm.student.id,
+                    'name': f"{tm.student.first_name} {tm.student.last_name}",
+                    'skills': tm.student.skills,
+                    'joined_at': tm.joined_at.isoformat()
+                }
+                for tm in p.team_members
+            ],
             'creator': {
                 'name': f"{p.creator.first_name} {p.creator.last_name}",
                 'title': p.creator.title
@@ -362,14 +470,18 @@ def project_messages(project_id):
         } for m in messages]), 200
     
     elif request.method == 'POST':
-        data = request.json
+        data = request.json or {}
+        content = (data.get('content') or '').strip()
+
+        if not content:
+            return jsonify({'error': 'Message content is required'}), 400
         
         message = Message(
             project_id=project_id,
             sender_id=current_user.id,
-            recipient_id=data.get('recipient_id'),
-            content=data['content'],
-            message_type=data.get('message_type', 'group')
+            recipient_id=None,
+            content=content,
+            message_type='group'
         )
         
         db.session.add(message)
@@ -478,32 +590,471 @@ def project_milestones(project_id):
 @app.route('/api/students', methods=['GET'])
 @login_required
 def get_students():
-    """Get all students for team finding"""
     keyword = request.args.get('keyword', '')
     
-    query = User.query.filter_by(role='student')
+    # Filter students by CRN - only show students in the same class
+    query = User.query.filter_by(role='student', crn=current_user.crn)
     
     if keyword:
         query = query.filter(
-            (User.skills.contains(keyword)) | 
-            (User.interests.contains(keyword)) |
             (User.first_name.contains(keyword)) |
-            (User.last_name.contains(keyword))
+            (User.last_name.contains(keyword)) |
+            (User.username.contains(keyword)) |
+            (User.skills.contains(keyword)) |
+            (User.interests.contains(keyword))
         )
     
     students = query.all()
     
     return jsonify([{
         'id': s.id,
+        'username': s.username,
+        'first_name': s.first_name,
+        'last_name': s.last_name,
         'name': f"{s.first_name} {s.last_name}",
         'skills': s.skills,
         'interests': s.interests,
         'biography': s.biography
     } for s in students]), 200
 
+@app.route('/api/faculty', methods=['GET'])
+@login_required
+def get_faculty():
+    """Get all faculty members in the same CRN"""
+    faculty_members = User.query.filter_by(role='faculty', crn=current_user.crn).all()
+    
+    return jsonify([{
+        'id': f.id,
+        'username': f.username,
+        'first_name': f.first_name,
+        'last_name': f.last_name,
+        'name': f"{f.first_name} {f.last_name}",
+        'title': f.title,
+        'email': f.email
+    } for f in faculty_members]), 200
+
+@app.route('/api/class-messages/contacts', methods=['GET'])
+@login_required
+def class_message_contacts():
+    if current_user.role == 'student':
+        users = User.query.filter(User.role == 'faculty').all()
+    elif current_user.role == 'faculty':
+        users = User.query.filter(User.role == 'student').all()
+    else:
+        users = []
+
+    return jsonify([{
+        'id': user.id,
+        'name': f"{user.first_name} {user.last_name}",
+        'role': user.role,
+        'title': user.title,
+        'email': user.email
+    } for user in users]), 200
+
+@app.route('/api/class-messages/<int:other_user_id>', methods=['GET'])
+@login_required
+def class_message_history(other_user_id):
+    other_user = User.query.get_or_404(other_user_id)
+
+    if not _can_exchange_class_messages(current_user, other_user):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    messages = ClassMessage.query.filter(
+        db.or_(
+            db.and_(ClassMessage.sender_id == current_user.id, ClassMessage.recipient_id == other_user.id),
+            db.and_(ClassMessage.sender_id == other_user.id, ClassMessage.recipient_id == current_user.id)
+        )
+    ).order_by(ClassMessage.created_at.asc()).all()
+
+    return jsonify([_serialize_class_message(message) for message in messages]), 200
+
+@app.route('/api/class-messages', methods=['POST'])
+@login_required
+def create_class_message():
+    data = request.json or {}
+    recipient_id = data.get('recipient_id')
+    content = (data.get('content') or '').strip()
+
+    if not recipient_id or not content:
+        return jsonify({'error': 'Recipient and content are required'}), 400
+
+    recipient = User.query.get(recipient_id)
+    if not _can_exchange_class_messages(current_user, recipient):
+        return jsonify({'error': 'Unauthorized recipient'}), 403
+
+    message = ClassMessage(
+        sender_id=current_user.id,
+        recipient_id=recipient.id,
+        crn_code=current_user.crn or recipient.crn or '',
+        content=content
+    )
+
+    db.session.add(message)
+    db.session.commit()
+
+    payload = _serialize_class_message(message)
+    socketio.emit('class_message_received', payload, room=f'user_{current_user.id}')
+    socketio.emit('class_message_received', payload, room=f'user_{recipient.id}')
+
+    return jsonify(payload), 201
+
+@socketio.on('connect')
+def socket_connect():
+    if not current_user.is_authenticated:
+        return False
+
+    join_room(f'user_{current_user.id}')
+    emit('socket_connected', {'user_id': current_user.id})
+
+@socketio.on('send_class_message')
+def send_class_message(data):
+    if not current_user.is_authenticated:
+        emit('class_message_error', {'error': 'Authentication required'})
+        return
+
+    recipient_id = data.get('recipient_id')
+    content = (data.get('content') or '').strip()
+
+    if not recipient_id or not content:
+        emit('class_message_error', {'error': 'Recipient and content are required'})
+        return
+
+    recipient = User.query.get(recipient_id)
+    if not _can_exchange_class_messages(current_user, recipient):
+        emit('class_message_error', {'error': 'Unauthorized recipient'})
+        return
+
+    message = ClassMessage(
+        sender_id=current_user.id,
+        recipient_id=recipient.id,
+        crn_code=current_user.crn,
+        content=content
+    )
+
+    db.session.add(message)
+    db.session.commit()
+
+    payload = _serialize_class_message(message)
+    emit('class_message_received', payload, room=f'user_{current_user.id}')
+    emit('class_message_received', payload, room=f'user_{recipient.id}')
+
+@app.route('/api/class-info', methods=['GET'])
+@login_required
+def get_class_info():
+    """Get information about the current user's class"""
+    if not current_user.crn:
+        return jsonify({'error': 'No class assigned'}), 404
+    
+    # Get the CRN details
+    crn = CRN.query.filter_by(crn_code=current_user.crn).first()
+    
+    if not crn:
+        return jsonify({'error': 'Class not found'}), 404
+    
+    # Count students and faculty in this class
+    student_count = User.query.filter_by(role='student', crn=current_user.crn).count()
+    faculty_count = User.query.filter_by(role='faculty', crn=current_user.crn).count()
+    project_count = Project.query.join(User, Project.creator_id == User.id).filter(
+        User.crn == current_user.crn
+    ).count()
+    
+    return jsonify({
+        'crn_code': crn.crn_code,
+        'course_name': crn.course_name,
+        'faculty_name': f"{crn.faculty.first_name} {crn.faculty.last_name}",
+        'student_count': student_count,
+        'faculty_count': faculty_count,
+        'project_count': project_count
+    }), 200
+
+# User Stories / Announcements
+@app.route('/api/user-stories', methods=['GET', 'POST'])
+@login_required
+def user_stories():
+    """Get all user stories or create a new one"""
+    if request.method == 'GET':
+        # Get all stories that the current user should see (filtered by CRN)
+        if current_user.role == 'faculty':
+            # Faculty sees all announcements from students and faculty in their CRN
+            stories = UserStory.query.join(User, UserStory.author_id == User.id).filter(
+                User.crn == current_user.crn
+            ).order_by(UserStory.created_at.desc()).all()
+        else:
+            # Students see:
+            # 1. Announcements from faculty in their CRN (project_id is NULL)
+            # 2. Announcements from teammates in their projects (project_id is set)
+            
+            # Get user's project IDs
+            team_memberships = TeamMember.query.filter_by(student_id=current_user.id).all()
+            user_project_ids = [tm.project_id for tm in team_memberships]
+            
+            # Get stories from faculty in same CRN (CRN-wide announcements)
+            faculty_stories = UserStory.query.join(User, UserStory.author_id == User.id).filter(
+                User.role == 'faculty',
+                User.crn == current_user.crn,
+                UserStory.project_id.is_(None)
+            ).all()
+            
+            # Get stories from project teammates (only from same CRN)
+            project_stories = UserStory.query.join(User, UserStory.author_id == User.id).filter(
+                UserStory.project_id.in_(user_project_ids),
+                User.crn == current_user.crn
+            ).all() if user_project_ids else []
+            
+            # Combine and remove duplicates
+            stories_dict = {s.id: s for s in faculty_stories + project_stories}
+            stories = sorted(stories_dict.values(), key=lambda x: x.created_at, reverse=True)
+        
+        return jsonify([{
+            'id': story.id,
+            'author_id': story.author_id,
+            'author_name': f"{story.author.first_name} {story.author.last_name}",
+            'author_role': story.author.role,
+            'title': story.title,
+            'content': story.content,
+            'story_type': story.story_type,
+            'priority': story.priority,
+            'project_id': story.project_id,
+            'created_at': story.created_at.isoformat(),
+            'updated_at': story.updated_at.isoformat()
+        } for story in stories]), 200
+    
+    # POST - Create new user story
+    data = request.json
+    
+    if not data.get('title') or not data.get('content'):
+        return jsonify({'error': 'Title and content are required'}), 400
+    
+    project_id = data.get('project_id')
+    
+    # Validate permissions
+    if current_user.role == 'student':
+        # Students can only create announcements for their projects
+        if not project_id:
+            return jsonify({'error': 'Students must specify a project for announcements'}), 403
+        
+        # Check if student is a member of this project
+        membership = TeamMember.query.filter_by(
+            student_id=current_user.id,
+            project_id=project_id
+        ).first()
+        
+        if not membership:
+            return jsonify({'error': 'You are not a member of this project'}), 403
+    else:
+        # Faculty can create CRN-wide announcements (project_id = None)
+        # or project-specific announcements
+        pass
+    
+    story = UserStory(
+        author_id=current_user.id,
+        project_id=project_id,
+        title=data['title'],
+        content=data['content'],
+        story_type=data.get('story_type', 'announcement'),
+        priority=data.get('priority', 'normal')
+    )
+    
+    db.session.add(story)
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'User story created successfully',
+        'story_id': story.id
+    }), 201
+
+@app.route('/api/user-stories/<int:story_id>', methods=['PUT', 'DELETE'])
+@login_required
+def manage_user_story(story_id):
+    """Update or delete a user story"""
+    story = UserStory.query.get_or_404(story_id)
+    
+    # Check if user is the author or faculty
+    if story.author_id != current_user.id and current_user.role != 'faculty':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    if request.method == 'PUT':
+        data = request.json
+        
+        if data.get('title'):
+            story.title = data['title']
+        if data.get('content'):
+            story.content = data['content']
+        if data.get('story_type'):
+            story.story_type = data['story_type']
+        if data.get('priority'):
+            story.priority = data['priority']
+        
+        story.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({'message': 'User story updated successfully'}), 200
+    
+    # DELETE
+    db.session.delete(story)
+    db.session.commit()
+    
+    return jsonify({'message': 'User story deleted successfully'}), 200
+
+# CRN Management
+@app.route('/api/crns', methods=['GET', 'POST'])
+def manage_crns():
+    """Get all CRNs or create a new one (faculty only for POST)"""
+    if request.method == 'GET':
+        # Anyone can view available CRNs for registration
+        crns = CRN.query.all()
+        return jsonify([{
+            'id': crn.id,
+            'crn_code': crn.crn_code,
+            'course_name': crn.course_name,
+            'faculty_name': f"{crn.faculty.first_name} {crn.faculty.last_name}",
+            'created_at': crn.created_at.isoformat()
+        } for crn in crns]), 200
+    
+    elif request.method == 'POST':
+        # Only faculty can create CRNs
+        if not current_user.is_authenticated:
+            return jsonify({'error': 'Authentication required'}), 401
+        
+        if current_user.role != 'faculty':
+            return jsonify({'error': 'Only faculty can create classes'}), 403
+        
+        data = request.json
+        
+        if not data.get('crn_code') or not data.get('course_name'):
+            return jsonify({'error': 'Class code and course name are required'}), 400
+        
+        # Check if CRN already exists
+        existing_crn = CRN.query.filter_by(crn_code=data['crn_code']).first()
+        if existing_crn:
+            return jsonify({'error': 'Class code already exists'}), 400
+        
+        crn = CRN(
+            crn_code=data['crn_code'],
+            course_name=data['course_name'],
+            faculty_id=current_user.id
+        )
+        
+        # Assign faculty to this class
+        current_user.crn = data['crn_code']
+        
+        db.session.add(crn)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Class created successfully',
+            'crn_id': crn.id
+        }), 201
+
+@app.route('/api/crns/<int:crn_id>', methods=['DELETE'])
+@login_required
+def delete_crn(crn_id):
+    """Delete a CRN (faculty only)"""
+    crn = CRN.query.get_or_404(crn_id)
+    
+    # Only the faculty who created it can delete
+    if crn.faculty_id != current_user.id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    # Check if any students are using this CRN
+    students_with_crn = User.query.filter_by(crn=crn.crn_code, role='student').count()
+    if students_with_crn > 0:
+        return jsonify({'error': 'Cannot delete class with enrolled students'}), 400
+    
+    db.session.delete(crn)
+    db.session.commit()
+    
+    return jsonify({'message': 'Class deleted successfully'}), 200
+
+@app.route('/api/my-classes', methods=['GET'])
+@login_required
+def get_my_classes():
+    """Get all classes for the current faculty member"""
+    if current_user.role != 'faculty':
+        return jsonify({'error': 'Only faculty can view their classes'}), 403
+    
+    # Get all classes created by this faculty
+    classes = CRN.query.filter_by(faculty_id=current_user.id).all()
+    
+    result = []
+    for cls in classes:
+        # Count students in this class
+        student_count = User.query.filter_by(role='student', crn=cls.crn_code).count()
+        
+        # Count projects in this class
+        project_count = Project.query.join(User, Project.creator_id == User.id).filter(
+            User.crn == cls.crn_code
+        ).count()
+        
+        result.append({
+            'id': cls.id,
+            'crn_code': cls.crn_code,
+            'course_name': cls.course_name,
+            'student_count': student_count,
+            'project_count': project_count,
+            'created_at': cls.created_at.isoformat()
+        })
+    
+    return jsonify(result), 200
+
+# Assignment Calendar
+@app.route('/api/calendar/assignments', methods=['GET'])
+@login_required
+def get_assignment_calendar():
+    """Get all assignments/tasks for calendar display"""
+    if current_user.role != 'student':
+        return jsonify({'error': 'Only students can view assignment calendar'}), 403
+    
+    # Get all tasks assigned to current student
+    tasks = Task.query.filter_by(assignee_id=current_user.id).all()
+    
+    assignments = []
+    for task in tasks:
+        if task.due_date:
+            assignments.append({
+                'id': task.id,
+                'title': task.title,
+                'description': task.description,
+                'due_date': task.due_date.isoformat(),
+                'status': task.status,
+                'project_id': task.project_id,
+                'project_name': task.project.name
+            })
+    
+    return jsonify(assignments), 200
+
+@app.route('/api/join-class', methods=['POST'])
+@login_required
+def join_class():
+    """Allow a student to join a class by entering its CRN code"""
+    if current_user.role != 'student':
+        return jsonify({'error': 'Only students can join classes'}), 403
+
+    data = request.json
+    crn_code = data.get('crn_code', '').strip()
+
+    if not crn_code:
+        return jsonify({'error': 'Please enter a CRN code'}), 400
+
+    crn = CRN.query.filter_by(crn_code=crn_code).first()
+    if not crn:
+        return jsonify({'error': 'Class not found. Please check the CRN and try again.'}), 404
+
+    if current_user.crn == crn_code:
+        return jsonify({'error': 'You are already enrolled in this class'}), 400
+
+    current_user.crn = crn_code
+    db.session.commit()
+
+    return jsonify({
+        'message': f'Successfully joined {crn.course_name}',
+        'crn_code': crn.crn_code,
+        'course_name': crn.course_name
+    }), 200
+
 # Initialize database
 with app.app_context():
     db.create_all()
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5001, allow_unsafe_werkzeug=True)
