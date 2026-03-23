@@ -161,11 +161,10 @@
 
                     <div class="class-chat-section">
                         <div class="section-header">
-                            <h2>💬 Messages</h2>
-                            <small style="color: var(--text-secondary); font-weight: normal;">Message faculty, students, or project teams</small>
+                            <h2>💬 Message Class</h2>
                         </div>
                         <div class="form-group">
-                            <label for="class-chat-recipient">Select Conversation</label>
+                            <label for="class-chat-recipient">Conversation</label>
                             <select id="class-chat-recipient"></select>
                         </div>
                         <div id="class-chat-messages" class="messages-list class-chat-messages"></div>
@@ -269,42 +268,90 @@
                     </div>
 
                     <div class="profile-card">
-                        <form id="profile-form">
-                            <div class="form-group">
-                                <label>Name</label>
-                                <input type="text" id="profile-name" readonly>
+                        <!-- View Mode -->
+                        <div id="profile-view-mode">
+                            <div class="profile-view-header">
+                                <h2 id="profile-display-name"></h2>
+                                <button class="edit-icon-btn" onclick="toggleProfileEdit(true)" title="Edit profile" aria-label="Edit profile">✏️</button>
                             </div>
-                            <div class="form-group">
-                                <label>Email</label>
-                                <input type="email" id="profile-email" readonly>
+                            <div class="profile-info-grid">
+                                <div class="profile-info-item">
+                                    <label>Email</label>
+                                    <span id="profile-display-email"></span>
+                                </div>
+                                <div class="profile-info-item">
+                                    <label>Role</label>
+                                    <span id="profile-display-role"></span>
+                                </div>
+                                <div class="profile-info-item" id="profile-display-title-row" style="display:none;">
+                                    <label>Title</label>
+                                    <span id="profile-display-title"></span>
+                                </div>
+                                <div class="profile-info-item" id="profile-display-class-row">
+                                    <label>Class</label>
+                                    <span id="profile-display-class"></span>
+                                </div>
                             </div>
-                            <div class="form-group">
+                            <div class="profile-info-section">
                                 <label>Biography</label>
-                                <textarea id="profile-bio" rows="4" placeholder="Tell others about yourself..."></textarea>
+                                <p id="profile-display-bio" class="profile-text-value"></p>
                             </div>
-                            <div class="form-group">
+                            <div class="profile-info-section">
                                 <label>Skills</label>
-                                <input type="text" id="profile-skills" placeholder="e.g., Python, React, Machine Learning">
+                                <div id="profile-display-skills" class="profile-tags"></div>
                             </div>
-                            <div class="form-group">
+                            <div class="profile-info-section">
                                 <label>Interests</label>
-                                <input type="text" id="profile-interests" placeholder="e.g., AI, Web Development, Data Science">
+                                <div id="profile-display-interests" class="profile-tags"></div>
                             </div>
-                            <button type="submit" class="btn btn-primary">Update Profile</button>
-                        </form>
+                        </div>
+
+                        <!-- Edit Mode (hidden by default) -->
+                        <div id="profile-edit-mode" style="display:none;">
+                            <div class="profile-view-header">
+                                <h2>Edit Profile</h2>
+                                <button class="edit-icon-btn" onclick="toggleProfileEdit(false)" title="Cancel editing" aria-label="Cancel editing">✖️</button>
+                            </div>
+                            <form id="profile-form">
+                                <div class="form-group">
+                                    <label>Name</label>
+                                    <input type="text" id="profile-name" readonly>
+                                </div>
+                                <div class="form-group">
+                                    <label>Email</label>
+                                    <input type="email" id="profile-email" readonly>
+                                </div>
+                                <div class="form-group">
+                                    <label>Biography</label>
+                                    <textarea id="profile-bio" rows="4" placeholder="Tell others about yourself..."></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label>Skills</label>
+                                    <input type="text" id="profile-skills" placeholder="e.g., Python, React, Machine Learning">
+                                </div>
+                                <div class="form-group">
+                                    <label>Interests</label>
+                                    <input type="text" id="profile-interests" placeholder="e.g., AI, Web Development, Data Science">
+                                </div>
+                                <div class="profile-edit-actions">
+                                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                                    <button type="button" class="btn btn-secondary" onclick="toggleProfileEdit(false)">Cancel</button>
+                                </div>
+                            </form>
+                        </div>
                     </div>
 
-                    <!-- CRN Management Section (Faculty Only) -->
+                    <!-- Class Management Section (Faculty Only) -->
                     <div class="profile-card faculty-only" style="margin-top: 2rem;">
                         <div class="class-mgmt-header">
                             <div>
                                 <h2>Class Management</h2>
-                                <p class="class-mgmt-subtitle">Create and manage your courses</p>
+                                <p class="class-mgmt-subtitle">Manage your classes, projects, and team assignments</p>
                             </div>
                             <button class="btn btn-primary" onclick="showCreateClass()">+ Create Class</button>
                         </div>
 
-                        <div id="crn-list" class="crn-list"></div>
+                        <div id="faculty-classes-list" class="faculty-classes-list"></div>
                     </div>
                 </div>
             </div>
@@ -326,7 +373,6 @@
                     <div class="project-tabs">
                         <button class="tab-btn active" data-tab="overview">Overview</button>
                         <button class="tab-btn" data-tab="team">Team</button>
-                        <button class="tab-btn" data-tab="messages">Messages</button>
                     </div>
 
                     <div class="tab-content active" id="overview-tab">
@@ -358,16 +404,6 @@
                         <div id="team-members-list"></div>
                     </div>
 
-                    <div class="tab-content" id="messages-tab">
-                        <div class="messages-container">
-                            <div id="messages-list"></div>
-                            <form id="message-form" class="message-form">
-                                <input type="text" id="message-input" placeholder="Type a message..." required>
-                                <button type="submit" class="btn btn-primary">Send</button>
-                            </form>
-                        </div>
-                    </div>
-
 
                 </div>
             </div>
@@ -379,6 +415,12 @@
                 <span class="close">&times;</span>
                 <h2>Create New Project</h2>
                 <form id="create-project-form">
+                    <div class="form-group faculty-only">
+                        <label for="new-project-class">Assign to Class</label>
+                        <select id="new-project-class" required>
+                            <option value="">Select a class</option>
+                        </select>
+                    </div>
                     <div class="form-group">
                         <label for="new-project-name">Project Name</label>
                         <input type="text" id="new-project-name" required>
@@ -457,12 +499,12 @@
                 <h2>Create Announcement</h2>
                 <form id="create-userstory-form">
                     <div class="form-group">
-                        <label for="new-story-project">Audience</label>
-                        <select id="new-story-project">
-                            <option value="">Select a project</option>
+                        <label for="new-story-audience">Audience</label>
+                        <select id="new-story-audience">
+                            <option value="">Select audience</option>
                         </select>
                         <small class="student-only">Select which project team should see this announcement</small>
-                        <small class="faculty-only">Leave blank to send to all students in your class, or select a specific project</small>
+                        <small class="faculty-only">Choose a class for all students, or a specific project team</small>
                     </div>
                     <div class="form-group">
                         <label for="new-story-title">Title</label>
