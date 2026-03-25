@@ -1647,3 +1647,137 @@ small {
 @media (max-width: 500px) {
     .join-class-form { flex-direction: column; align-items: stretch; }
 }
+
+/* ==========================================
+   CUSTOM PROJECTS STYLES
+   ========================================== */
+
+/* Button accent color */
+.btn-custom-projects {
+    background: linear-gradient(135deg, #7c3aed, #5b21b6);
+    border-color: #7c3aed;
+}
+.btn-custom-projects:hover {
+    background: linear-gradient(135deg, #6d28d9, #4c1d95);
+}
+
+/* Status: pending */
+.status-pending {
+    background: #fef3c7;
+    color: #92400e;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Custom Projects modal subtitle */
+.modal-subtitle {
+    color: #6b7280;
+    margin-bottom: 1.5rem;
+    font-size: 0.95rem;
+}
+
+/* Tabs inside the custom projects modal */
+.custom-projects-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    border-bottom: 2px solid #e5e7eb;
+    padding-bottom: 0;
+}
+.custom-projects-tabs .tab-btn {
+    background: none;
+    border: none;
+    padding: 0.6rem 1.2rem;
+    cursor: pointer;
+    font-size: 0.95rem;
+    color: #6b7280;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: color 0.2s, border-color 0.2s;
+}
+.custom-projects-tabs .tab-btn.active {
+    color: #2563eb;
+    border-bottom-color: #2563eb;
+    font-weight: 600;
+}
+
+/* Faculty proposal card extras */
+.cp-faculty-card {
+    border-left: 4px solid #d1d5db;
+}
+.cp-faculty-card:has(.status-pending) {
+    border-left-color: #f59e0b;
+}
+.cp-faculty-card:has(.status-open) {
+    border-left-color: #10b981;
+}
+.cp-faculty-card:has(.status-full) {
+    border-left-color: #ef4444;
+}
+
+/* Approve / deny buttons row */
+.cp-review-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+.btn-danger {
+    background: #ef4444;
+    color: #fff;
+    border: none;
+    padding: 0.5rem 1.25rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: background 0.2s;
+}
+.btn-danger:hover {
+    background: #dc2626;
+}
+.btn-sm {
+    padding: 0.4rem 1rem;
+    font-size: 0.875rem;
+}
+
+/* Faculty feedback block inside card */
+.cp-faculty-feedback {
+    background: #f3f4f6;
+    border-left: 3px solid #9ca3af;
+    padding: 0.6rem 0.9rem;
+    margin-top: 0.75rem;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.9rem;
+    color: #374151;
+}
+
+/* Approved note inside card */
+.cp-approved-note {
+    margin-top: 0.75rem;
+    font-size: 0.9rem;
+    color: #065f46;
+    font-weight: 500;
+}
+.cp-approved-note a {
+    color: #2563eb;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* Footer actions in feedback modal */
+.modal-footer-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+}
+
+/* Faculty proposals list container */
+.faculty-cp-list {
+    max-height: 55vh;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+}
