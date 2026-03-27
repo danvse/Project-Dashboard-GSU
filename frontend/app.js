@@ -8,6 +8,10 @@ let projects = [];
 let students = [];
 let currentPage = 1;
 const PROJECTS_PER_PAGE = 6;
+let classSocket = null;
+let classChatContacts = [];
+let activeClassChatRecipientId = null;
+let classChatRetryCount = 0;
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
@@ -67,6 +71,25 @@ function initializeEventListeners() {
 
     // Create Project Form
     document.getElementById('create-project-form').addEventListener('submit', handleCreateProject);
+
+    // Class chat
+    const classChatRecipient = document.getElementById('class-chat-recipient');
+    const classChatForm = document.getElementById('class-chat-form');
+    if (classChatRecipient) {
+        classChatRecipient.addEventListener('change', (e) => {
+            const recipientId = parseInt(e.target.value);
+            if (recipientId) {
+                activeClassChatRecipientId = recipientId;
+                loadClassChatHistory(recipientId);
+            } else {
+                activeClassChatRecipientId = null;
+                renderClassChatMessages([]);
+            }
+        });
+    }
+    if (classChatForm) {
+        classChatForm.addEventListener('submit', sendClassChatMessage);
+    }
 
     // Project Modal
     setupProjectModal();
@@ -152,9 +175,15 @@ async function handleLogout() {
             method: 'POST',
             credentials: 'include'
         });
+
+        if (classSocket) {
+            classSocket.disconnect();
+            classSocket = null;
+        }
         
         currentUser = null;
         localStorage.removeItem('user');
+        localStorage.removeItem('currentView');
         showPage('login-page');
     } catch (error) {
         console.error('Logout error:', error);
@@ -188,7 +217,11 @@ function showDashboard() {
     loadProjects();
     loadStudents();
     loadUserProfile();
-    showView('overview');
+    initializeClassChat();
+    
+    // Restore last viewed tab, or default to overview
+    const savedView = localStorage.getItem('currentView') || 'overview';
+    showView(savedView);
 }
 
 function updateRoleVisibility() {
@@ -230,6 +263,14 @@ function showView(viewName) {
     
     document.getElementById(`${viewName}-view`).classList.add('active');
     
+    // Persist current view for page refresh
+    localStorage.setItem('currentView', viewName);
+    
+    // Update active nav link
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+    const activeLink = document.querySelector(`.nav-link[data-view="${viewName}"]`);
+    if (activeLink) activeLink.classList.add('active');
+    
     // Load data for specific views
     if (viewName === 'projects') {
         loadProjects();
@@ -241,6 +282,7 @@ function showView(viewName) {
         loadMyProjects();
         loadUserStories();
         loadClassInfo();
+        loadClassChatContacts();
     }
 }
 
@@ -299,7 +341,10 @@ function displayProjects(projectsList) {
                     <h3>${project.name}</h3>
                     <small>${project.course}</small>
                 </div>
-                <span class="project-status status-${statusClass}">${statusText}</span>
+                <div class="project-card-badges">
+                    ${project.team_number ? `<span class="team-number-badge">Team ${project.team_number}</span>` : ''}
+                    <span class="project-status status-${statusClass}">${statusText}</span>
+                </div>
             </div>
             
             <div class="project-team-members">
@@ -427,9 +472,15 @@ function displayStudents(studentsList) {
         return;
     }
     
-    grid.innerHTML = studentsList.map(student => `
+    grid.innerHTML = studentsList.map(student => {
+        // Don't show message icon for yourself
+        const showMsg = currentUser && student.id !== currentUser.id;
+        return `
         <div class="student-card">
-            <h3>${student.name}</h3>
+            <div class="student-card-header">
+                <h3>${student.name}</h3>
+                ${showMsg ? `<button class="msg-icon-btn" onclick="openDirectMessage(${student.id}, '${escapeHtml(student.name)}')" title="Message ${student.name}" aria-label="Send message to ${student.name}">✉️</button>` : ''}
+            </div>
             <p class="student-bio">${student.biography || 'No biography provided'}</p>
             <div class="student-tags">
                 ${student.skills ? student.skills.split(',').map(s => 
@@ -437,7 +488,40 @@ function displayStudents(studentsList) {
                 ).join('') : ''}
             </div>
         </div>
-    `).join('');
+    `}).join('');
+}
+
+function openDirectMessage(userId, userName) {
+    // Switch to dashboard overview where the class chat lives
+    showView('overview');
+    
+    // Update active nav
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+    document.querySelector('.nav-link[data-view="overview"]').classList.add('active');
+    
+    // Wait a tick for the view to render, then select the recipient
+    setTimeout(() => {
+        const select = document.getElementById('class-chat-recipient');
+        if (select) {
+            // Try to select the user in the dropdown
+            const option = Array.from(select.options).find(o => o.value === String(userId));
+            if (option) {
+                select.value = String(userId);
+                activeClassChatRecipientId = userId;
+                loadClassChatHistory(userId);
+            }
+        }
+        
+        // Scroll to the chat section
+        const chatSection = document.querySelector('.class-chat-section');
+        if (chatSection) {
+            chatSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        
+        // Focus the input
+        const input = document.getElementById('class-chat-input');
+        if (input) input.focus();
+    }, 300);
 }
 
 function searchStudents(keyword) {
@@ -453,6 +537,39 @@ async function loadUserProfile() {
         
         const profile = await response.json();
         
+        // Populate view mode
+        document.getElementById('profile-display-name').textContent = `${profile.first_name} ${profile.last_name}`;
+        document.getElementById('profile-display-email').textContent = profile.email;
+        document.getElementById('profile-display-role').textContent = profile.role === 'faculty' ? 'Faculty' : 'Student';
+        
+        if (profile.title) {
+            document.getElementById('profile-display-title').textContent = profile.title;
+            document.getElementById('profile-display-title-row').style.display = '';
+        }
+        
+        document.getElementById('profile-display-class').textContent = profile.crn || 'Not assigned';
+        
+        document.getElementById('profile-display-bio').textContent = profile.biography || 'No biography provided';
+        
+        const skillsContainer = document.getElementById('profile-display-skills');
+        if (profile.skills) {
+            skillsContainer.innerHTML = profile.skills.split(',').map(s => 
+                `<span class="tag">${s.trim()}</span>`
+            ).join('');
+        } else {
+            skillsContainer.innerHTML = '<span class="profile-empty">No skills listed</span>';
+        }
+        
+        const interestsContainer = document.getElementById('profile-display-interests');
+        if (profile.interests) {
+            interestsContainer.innerHTML = profile.interests.split(',').map(s => 
+                `<span class="tag">${s.trim()}</span>`
+            ).join('');
+        } else {
+            interestsContainer.innerHTML = '<span class="profile-empty">No interests listed</span>';
+        }
+        
+        // Populate edit mode fields
         document.getElementById('profile-name').value = `${profile.first_name} ${profile.last_name}`;
         document.getElementById('profile-email').value = profile.email;
         document.getElementById('profile-bio').value = profile.biography || '';
@@ -468,6 +585,11 @@ async function loadUserProfile() {
     }
 }
 
+function toggleProfileEdit(editing) {
+    document.getElementById('profile-view-mode').style.display = editing ? 'none' : '';
+    document.getElementById('profile-edit-mode').style.display = editing ? '' : 'none';
+}
+
 async function loadMyClasses() {
     try {
         const response = await fetch(`${API_URL}/my-classes`, {
@@ -476,10 +598,102 @@ async function loadMyClasses() {
         
         if (response.ok) {
             const classes = await response.json();
-            displayCRNs(classes);
+            displayFacultyClasses(classes);
         }
     } catch (error) {
         console.error('Error loading classes:', error);
+    }
+}
+
+function displayFacultyClasses(classes) {
+    const container = document.getElementById('faculty-classes-list');
+    if (!container) return;
+    
+    if (!classes || classes.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No classes created yet. Click "+ Create Class" to get started.</p></div>';
+        return;
+    }
+    
+    container.innerHTML = classes.map(cls => {
+        const projectsHtml = cls.projects && cls.projects.length > 0
+            ? cls.projects.map(p => `
+                <div class="class-project-row">
+                    <div class="class-project-info">
+                        <span class="class-project-name">${escapeHtml(p.name)}</span>
+                        <span class="class-project-members">${p.current_members}/${p.capacity} members</span>
+                    </div>
+                    <div class="class-project-team">
+                        <label for="team-num-${p.id}">Team #</label>
+                        <input type="number" id="team-num-${p.id}" class="team-number-input" 
+                            value="${p.team_number || ''}" min="1" max="99" 
+                            placeholder="—"
+                            onchange="assignTeamNumber(${p.id}, this.value)">
+                    </div>
+                </div>
+            `).join('')
+            : '<p class="class-no-projects">No projects in this class yet</p>';
+        
+        return `
+            <div class="faculty-class-card">
+                <div class="faculty-class-header" onclick="toggleClassDropdown(this)">
+                    <div class="faculty-class-title">
+                        <span class="faculty-class-code">${escapeHtml(cls.crn_code)}</span>
+                        <span class="faculty-class-name">${escapeHtml(cls.course_name)}</span>
+                    </div>
+                    <div class="faculty-class-stats">
+                        <span>${cls.student_count} students</span>
+                        <span>${cls.project_count} projects</span>
+                        <span class="dropdown-arrow">▼</span>
+                    </div>
+                </div>
+                <div class="faculty-class-body" style="display:none;">
+                    <div class="class-projects-header">
+                        <h4>Projects & Team Assignments</h4>
+                    </div>
+                    <div class="class-projects-list">
+                        ${projectsHtml}
+                    </div>
+                    <div class="faculty-class-actions">
+                        <button class="btn btn-sm btn-danger" onclick="deleteCRN(${cls.id})">Delete Class</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function toggleClassDropdown(header) {
+    const body = header.nextElementSibling;
+    const arrow = header.querySelector('.dropdown-arrow');
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : 'block';
+    arrow.textContent = isOpen ? '▼' : '▲';
+}
+
+async function assignTeamNumber(projectId, teamNumber) {
+    const value = teamNumber ? parseInt(teamNumber) : null;
+    
+    try {
+        const response = await fetch(`${API_URL}/projects/${projectId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ team_number: value })
+        });
+        
+        if (response.ok) {
+            // Brief visual feedback
+            const input = document.getElementById(`team-num-${projectId}`);
+            if (input) {
+                input.style.borderColor = '#22c55e';
+                setTimeout(() => { input.style.borderColor = ''; }, 1500);
+            }
+        } else {
+            const error = await response.json();
+            alert('Failed to assign team number: ' + (error.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error assigning team number:', error);
     }
 }
 
@@ -504,6 +718,8 @@ async function handleProfileUpdate(e) {
         
         if (response.ok) {
             alert('Profile updated successfully!');
+            toggleProfileEdit(false);
+            loadUserProfile();
         } else {
             alert('Failed to update profile');
         }
@@ -555,8 +771,11 @@ function setupProjectModal() {
     document.getElementById('join-project-btn').addEventListener('click', joinProject);
     document.getElementById('leave-project-btn').addEventListener('click', leaveProject);
     
-    // Message form
-    document.getElementById('message-form').addEventListener('submit', sendMessage);
+    // Message form (legacy modal may not include this form)
+    const messageForm = document.getElementById('message-form');
+    if (messageForm) {
+        messageForm.addEventListener('submit', sendMessage);
+    }
 }
 
 async function openProjectModal(projectId) {
@@ -751,6 +970,237 @@ async function sendMessage(e) {
     }
 }
 
+// Class Chat (Student <-> Faculty)
+async function initializeClassChat() {
+    classChatRetryCount = 0;
+    await loadClassChatContacts();
+    connectClassChatSocket();
+}
+
+function connectClassChatSocket() {
+    if (classSocket || typeof io === 'undefined') {
+        return;
+    }
+
+    classSocket = io('http://localhost:5001', {
+        withCredentials: true,
+        transports: ['polling']
+    });
+
+    classSocket.on('class_message_received', (message) => {
+        const isCurrentConversation = activeClassChatRecipientId && (
+            message.sender_id === activeClassChatRecipientId ||
+            message.recipient_id === activeClassChatRecipientId
+        );
+
+        if (isCurrentConversation) {
+            appendClassChatMessage(message);
+        }
+    });
+
+    classSocket.on('class_message_error', (payload) => {
+        alert(payload.error || 'Failed to send message');
+    });
+}
+
+async function loadClassChatContacts() {
+    try {
+        const response = await fetch(`${API_URL}/class-messages/contacts`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            await loadClassChatContactsFallback();
+            return;
+        }
+
+        classChatContacts = await response.json();
+
+        if (classChatContacts.length === 0) {
+            await loadClassChatContactsFallback();
+            return;
+        }
+
+        renderClassChatContacts(classChatContacts);
+    } catch (error) {
+        console.error('Error loading chat contacts:', error);
+        await loadClassChatContactsFallback();
+    }
+}
+
+async function loadClassChatContactsFallback() {
+    try {
+        const endpoint = currentUser && currentUser.role === 'student' ? `${API_URL}/faculty` : `${API_URL}/students`;
+        const response = await fetch(endpoint, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            renderClassChatContacts([]);
+            return;
+        }
+
+        const users = await response.json();
+        classChatContacts = users.map(user => ({
+            id: user.id,
+            name: user.name || `${user.first_name} ${user.last_name}`,
+            role: currentUser && currentUser.role === 'student' ? 'faculty' : 'student',
+            title: user.title,
+            email: user.email
+        }));
+
+        renderClassChatContacts(classChatContacts);
+    } catch (error) {
+        console.error('Error loading fallback chat contacts:', error);
+        renderClassChatContacts([]);
+    }
+}
+
+function renderClassChatContacts(contacts) {
+    const select = document.getElementById('class-chat-recipient');
+    const input = document.getElementById('class-chat-input');
+    if (!select || !input) return;
+
+    if (contacts.length === 0) {
+        const emptyLabel = currentUser && currentUser.role === 'student'
+            ? 'No professors available yet'
+            : 'No students available yet';
+        select.innerHTML = `<option value="">${emptyLabel}</option>`;
+        select.disabled = false;
+        input.disabled = true;
+        renderClassChatMessages([]);
+
+        if (classChatRetryCount < 3) {
+            classChatRetryCount += 1;
+            setTimeout(() => {
+                loadClassChatContacts();
+            }, 1200);
+        }
+        return;
+    }
+
+    classChatRetryCount = 0;
+    select.disabled = false;
+    input.disabled = false;
+    select.innerHTML = contacts.map(contact => {
+        const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
+        return `<option value="${contact.id}">${escapeHtml(contact.name)} (${roleLabel})</option>`;
+    }).join('');
+
+    const selectedId = parseInt(select.value) || contacts[0].id;
+    select.value = String(selectedId);
+    activeClassChatRecipientId = selectedId;
+    loadClassChatHistory(selectedId);
+}
+
+async function loadClassChatHistory(recipientId) {
+    try {
+        const response = await fetch(`${API_URL}/class-messages/${recipientId}`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            renderClassChatMessages([]);
+            return;
+        }
+
+        const messages = await response.json();
+        renderClassChatMessages(messages);
+    } catch (error) {
+        console.error('Error loading class chat history:', error);
+        renderClassChatMessages([]);
+    }
+}
+
+function renderClassChatMessages(messages) {
+    const container = document.getElementById('class-chat-messages');
+    if (!container) return;
+
+    if (!messages.length) {
+        container.innerHTML = '<div class="empty-state"><h3>No messages yet</h3><p>Start a conversation.</p></div>';
+        return;
+    }
+
+    container.innerHTML = messages.map(message => {
+        const isOwn = currentUser && message.sender_id === currentUser.id;
+        return `
+            <div class="message ${isOwn ? 'message-own' : ''}">
+                <div class="message-header">
+                    <span class="message-sender">${escapeHtml(message.sender_name)}</span>
+                    <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+                </div>
+                <div class="message-content">${escapeHtml(message.content)}</div>
+            </div>
+        `;
+    }).join('');
+
+    container.scrollTop = container.scrollHeight;
+}
+
+function appendClassChatMessage(message) {
+    const container = document.getElementById('class-chat-messages');
+    if (!container) return;
+
+    const emptyState = container.querySelector('.empty-state');
+    if (emptyState) {
+        emptyState.remove();
+    }
+
+    const isOwn = currentUser && message.sender_id === currentUser.id;
+    const node = document.createElement('div');
+    node.className = `message ${isOwn ? 'message-own' : ''}`;
+    node.innerHTML = `
+        <div class="message-header">
+            <span class="message-sender">${escapeHtml(message.sender_name)}</span>
+            <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+        </div>
+        <div class="message-content">${escapeHtml(message.content)}</div>
+    `;
+
+    container.appendChild(node);
+    container.scrollTop = container.scrollHeight;
+}
+
+async function sendClassChatMessage(e) {
+    e.preventDefault();
+
+    if (!activeClassChatRecipientId) {
+        return;
+    }
+
+    const input = document.getElementById('class-chat-input');
+    if (!input) return;
+
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+        const response = await fetch(`${API_URL}/class-messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                recipient_id: activeClassChatRecipientId,
+                content
+            })
+        });
+
+        if (!response.ok) {
+            const errorPayload = await response.json();
+            alert(errorPayload.error || 'Failed to send message');
+            return;
+        }
+
+        input.value = '';
+        await loadClassChatHistory(activeClassChatRecipientId);
+    } catch (error) {
+        console.error('Error sending class message:', error);
+        alert('An error occurred while sending your message.');
+    }
+}
+
 // Tasks
 async function loadTasks(projectId) {
     try {
@@ -836,7 +1286,23 @@ function setupCreateProjectModal() {
     };
 }
 
-function showCreateProject() {
+async function showCreateProject() {
+    // Populate class dropdown for faculty
+    if (currentUser.role === 'faculty') {
+        try {
+            const response = await fetch(`${API_URL}/my-classes`, { credentials: 'include' });
+            if (response.ok) {
+                const classes = await response.json();
+                const select = document.getElementById('new-project-class');
+                select.innerHTML = '<option value="">Select a class</option>';
+                classes.forEach(cls => {
+                    select.innerHTML += `<option value="${cls.crn_code}">${cls.crn_code} - ${cls.course_name}</option>`;
+                });
+            }
+        } catch (error) {
+            console.error('Error loading classes:', error);
+        }
+    }
     document.getElementById('create-project-modal').classList.add('active');
 }
 
@@ -849,6 +1315,12 @@ async function handleCreateProject(e) {
         course: document.getElementById('new-project-course').value,
         capacity: parseInt(document.getElementById('new-project-capacity').value)
     };
+    
+    // Include class assignment
+    const classSelect = document.getElementById('new-project-class');
+    if (classSelect && classSelect.value) {
+        projectData.crn_code = classSelect.value;
+    }
     
     try {
         const response = await fetch(`${API_URL}/projects`, {
@@ -865,6 +1337,7 @@ async function handleCreateProject(e) {
             document.getElementById('create-project-modal').classList.remove('active');
             document.getElementById('create-project-form').reset();
             loadProjects();
+            if (currentUser.role === 'faculty') loadMyClasses();
         } else {
             const data = await response.json();
             alert(data.error || 'Failed to create project');
@@ -1012,11 +1485,20 @@ function displayUserStories(stories) {
         const canEdit = currentUser && (story.author_id === currentUser.id || currentUser.role === 'faculty');
         const timeAgo = getTimeAgo(new Date(story.created_at));
         
+        // Determine audience label
+        let audienceLabel = '';
+        if (story.target_crn) {
+            audienceLabel = `<span class="story-badge audience-class">📚 Class: ${escapeHtml(story.target_crn)}</span>`;
+        } else if (story.project_id) {
+            audienceLabel = `<span class="story-badge audience-project">👥 Project Team</span>`;
+        }
+        
         return `
             <div class="user-story-card priority-${story.priority}">
                 <div class="user-story-header">
                     <h3 class="user-story-title">${escapeHtml(story.title)}</h3>
                     <div class="user-story-meta">
+                        ${audienceLabel}
                         <span class="story-badge type-${story.story_type}">${story.story_type}</span>
                         ${story.priority === 'high' ? '<span class="story-badge priority-high">HIGH</span>' : ''}
                     </div>
@@ -1043,30 +1525,68 @@ function displayUserStories(stories) {
 async function showCreateUserStory() {
     const modal = document.getElementById('create-userstory-modal');
     
-    // Load user's projects for project selection
-    if (currentUser.role === 'student' || currentUser.role === 'faculty') {
+    // Setup close button
+    const closeBtn = modal.querySelector('.close');
+    closeBtn.onclick = () => {
+        modal.classList.remove('active');
+    };
+    
+    const audienceSelect = document.getElementById('new-story-audience');
+    
+    if (currentUser.role === 'faculty') {
+        // Faculty gets: My Classes + Other Teams (projects)
         try {
-            const response = await fetch(`${API_URL}/projects`, {
-                credentials: 'include'
-            });
+            const [classesRes, projectsRes] = await Promise.all([
+                fetch(`${API_URL}/my-classes`, { credentials: 'include' }),
+                fetch(`${API_URL}/projects`, { credentials: 'include' })
+            ]);
             
-            const allProjects = await response.json();
+            const classes = await classesRes.json();
+            const allProjects = await projectsRes.json();
             
-            // For students, filter to their projects; for faculty, show all
-            const userProjects = currentUser.role === 'student' 
-                ? allProjects.filter(p => p.team_members && p.team_members.some(m => m.id === currentUser.id))
-                : allProjects;
+            audienceSelect.innerHTML = '<option value="">Select audience</option>';
             
-            const projectSelect = document.getElementById('new-story-project');
-            if (projectSelect) {
-                projectSelect.innerHTML = currentUser.role === 'faculty' 
-                    ? '<option value="">All Students in CRN</option>' 
-                    : '<option value="">Select a project</option>';
-                
-                userProjects.forEach(project => {
-                    projectSelect.innerHTML += `<option value="${project.id}">${project.name}</option>`;
+            // Add classes group
+            if (classes.length > 0) {
+                const classGroup = document.createElement('optgroup');
+                classGroup.label = '📚 My Classes';
+                classes.forEach(cls => {
+                    const opt = document.createElement('option');
+                    opt.value = `class:${cls.crn_code}`;
+                    opt.textContent = `${cls.crn_code} - ${cls.course_name} (${cls.student_count} students)`;
+                    classGroup.appendChild(opt);
                 });
+                audienceSelect.appendChild(classGroup);
             }
+            
+            // Add projects group
+            if (allProjects.length > 0) {
+                const projectGroup = document.createElement('optgroup');
+                projectGroup.label = '👥 Other Teams (Projects)';
+                allProjects.forEach(project => {
+                    const opt = document.createElement('option');
+                    opt.value = `project:${project.id}`;
+                    opt.textContent = `${project.name} (${project.current_members}/${project.capacity} members)`;
+                    projectGroup.appendChild(opt);
+                });
+                audienceSelect.appendChild(projectGroup);
+            }
+        } catch (error) {
+            console.error('Error loading audience options:', error);
+        }
+    } else {
+        // Students: show their projects
+        try {
+            const response = await fetch(`${API_URL}/projects`, { credentials: 'include' });
+            const allProjects = await response.json();
+            const myProjects = allProjects.filter(p => 
+                p.team_members && p.team_members.some(m => m.id === currentUser.id)
+            );
+            
+            audienceSelect.innerHTML = '<option value="">Select a project</option>';
+            myProjects.forEach(project => {
+                audienceSelect.innerHTML += `<option value="project:${project.id}">${project.name}</option>`;
+            });
         } catch (error) {
             console.error('Error loading projects:', error);
         }
@@ -1086,19 +1606,29 @@ document.getElementById('create-userstory-form').addEventListener('submit', asyn
         priority: document.getElementById('new-story-priority').value
     };
     
-    // For students, include project_id
+    const audienceSelect = document.getElementById('new-story-audience');
+    const audienceValue = audienceSelect.value;
+    
     if (currentUser.role === 'student') {
-        const projectSelect = document.getElementById('new-story-project');
-        if (!projectSelect.value) {
+        if (!audienceValue) {
             alert('Please select a project for your announcement');
             return;
         }
-        storyData.project_id = parseInt(projectSelect.value);
+        // Students always target a project
+        storyData.project_id = parseInt(audienceValue.replace('project:', ''));
     } else {
-        // For faculty, project_id is optional (NULL means CRN-wide)
-        const projectSelect = document.getElementById('new-story-project');
-        if (projectSelect && projectSelect.value) {
-            storyData.project_id = parseInt(projectSelect.value);
+        // Faculty: parse audience type
+        if (!audienceValue) {
+            alert('Please select an audience for your announcement');
+            return;
+        }
+        
+        if (audienceValue.startsWith('class:')) {
+            // Class-wide announcement
+            storyData.target_crn = audienceValue.replace('class:', '');
+        } else if (audienceValue.startsWith('project:')) {
+            // Project-specific announcement
+            storyData.project_id = parseInt(audienceValue.replace('project:', ''));
         }
     }
     
@@ -1162,9 +1692,6 @@ async function loadCRNs() {
         
         if (response.ok) {
             const crns = await response.json();
-            displayCRNs(crns);
-            
-            // Also populate the registration CRN select
             populateRegistrationCRNs(crns);
         }
     } catch (error) {
@@ -1172,46 +1699,12 @@ async function loadCRNs() {
     }
 }
 
-function displayCRNs(crns) {
-    const container = document.getElementById('crn-list');
-    
-    if (!container) return;  // Faculty profile may not have this element
-    
-    if (!crns || crns.length === 0) {
-        container.innerHTML = '<div class="empty-state"><p>No classes created yet.</p></div>';
-        return;
-    }
-    
-    container.innerHTML = crns.map(crn => {
-        const isOwner = currentUser && currentUser.id === crn.faculty_id;
-        return `
-            <div class="crn-card">
-                <div class="crn-header">
-                    <div>
-                        <h4>${crn.crn_code}</h4>
-                        <p>${crn.course_name}</p>
-                    </div>
-                    <div class="crn-stats">
-                        ${crn.student_count !== undefined ? `<span>${crn.student_count} students</span>` : ''}
-                        ${crn.project_count !== undefined ? `<span>${crn.project_count} projects</span>` : ''}
-                    </div>
-                </div>
-                ${isOwner ? `
-                    <div class="crn-actions">
-                        <button onclick="deleteCRN(${crn.id})" class="btn btn-sm btn-danger">Delete Class</button>
-                    </div>
-                ` : ''}
-            </div>
-        `;
-    }).join('');
-}
-
 function populateRegistrationCRNs(crns) {
     const crnSelect = document.getElementById('crn');
     
     if (!crnSelect) return;
     
-    crnSelect.innerHTML = '<option value="">Select a CRN</option>';
+    crnSelect.innerHTML = '<option value="">Select a class</option>';
     crns.forEach(crn => {
         crnSelect.innerHTML += `<option value="${crn.crn_code}">${crn.crn_code} - ${crn.course_name}</option>`;
     });
@@ -1667,15 +2160,20 @@ function displayFaculty(facultyList) {
         return;
     }
     
-    grid.innerHTML = facultyList.map(faculty => `
+    grid.innerHTML = facultyList.map(faculty => {
+        const showMsg = currentUser && faculty.id !== currentUser.id;
+        return `
         <div class="faculty-card">
-            <h3>${faculty.title ? faculty.title + ' ' : ''}${faculty.name}</h3>
+            <div class="student-card-header">
+                <h3>${faculty.title ? faculty.title + ' ' : ''}${faculty.name}</h3>
+                ${showMsg ? `<button class="msg-icon-btn" onclick="openDirectMessage(${faculty.id}, '${escapeHtml(faculty.name)}')" title="Message ${faculty.name}" aria-label="Send message to ${faculty.name}">✉️</button>` : ''}
+            </div>
             <p class="faculty-email">${faculty.email}</p>
             <div class="faculty-meta">
                 <span>Faculty Member</span>
             </div>
         </div>
-    `).join('');
+    `}).join('');
 }
 
 // Update loadDashboard to include new features
