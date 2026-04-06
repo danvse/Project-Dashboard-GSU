@@ -144,7 +144,7 @@
                             </div>
                         </div>
                         <div class="join-class-form">
-                            <input type="text" id="join-crn-input" placeholder="Enter CRN (e.g., 12345)" maxlength="20" onkeydown="if(event.key==='Enter') joinClass()">
+                            <input type="text" id="join-crn-input" placeholder="Enter CRN (e.g., 12345)" maxlength="5" pattern="\d{5}" inputmode="numeric" onkeydown="if(event.key==='Enter') joinClass()">
                             <button class="btn btn-primary" onclick="joinClass()">Join Class</button>
                         </div>
                         <div id="join-class-feedback" class="join-class-feedback" style="display:none;"></div>
@@ -163,13 +163,45 @@
                         <div class="section-header">
                             <h2>💬 Message Class</h2>
                         </div>
-                        <div class="form-group">
-                            <label for="class-chat-recipient">Conversation</label>
+                        
+                        <!-- Student view: Single faculty dropdown -->
+                        <div id="student-chat-dropdown" class="form-group" style="display: none;">
+                            <label for="class-chat-recipient">Select Faculty</label>
                             <select id="class-chat-recipient"></select>
                         </div>
+                        
+                        <!-- Faculty view: Dual dropdowns (class + student) -->
+                        <div id="faculty-chat-dropdowns" style="display: none;">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="class-chat-class">Select Class</label>
+                                    <select id="class-chat-class"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="class-chat-student">Select Student</label>
+                                    <select id="class-chat-student"></select>
+                                </div>
+                            </div>
+                        </div>
+                        
                         <div id="class-chat-messages" class="messages-list class-chat-messages"></div>
                         <form id="class-chat-form" class="message-form">
                             <input type="text" id="class-chat-input" placeholder="Type a message..." maxlength="1000" required>
+                            <button type="submit" class="btn btn-primary">Send</button>
+                        </form>
+                    </div>
+
+                    <div id="project-group-chat-section" class="class-chat-section student-only" style="display: none;">
+                        <div class="section-header">
+                            <h2>👥 Project Group Chat</h2>
+                        </div>
+                        <div class="form-group">
+                            <label for="project-group-chat-select">Select Project</label>
+                            <select id="project-group-chat-select"></select>
+                        </div>
+                        <div id="project-group-chat-messages" class="messages-list class-chat-messages"></div>
+                        <form id="project-group-chat-form" class="message-form">
+                            <input type="text" id="project-group-chat-input" placeholder="Type a message to your project group..." maxlength="1000" required>
                             <button type="submit" class="btn btn-primary">Send</button>
                         </form>
                     </div>
@@ -374,6 +406,7 @@
                     <div class="project-tabs">
                         <button class="tab-btn active" data-tab="overview">Overview</button>
                         <button class="tab-btn" data-tab="team">Team</button>
+                        <button class="tab-btn student-only" data-tab="team-messages">Team Messages</button>
                     </div>
 
                     <div class="tab-content active" id="overview-tab">
@@ -394,6 +427,10 @@
                                 <label>Created By:</label>
                                 <span id="project-creator"></span>
                             </div>
+                            <div class="info-item">
+                                <label>Visible To Classes:</label>
+                                <span id="project-visible-classes"></span>
+                            </div>
                         </div>
                         <div class="project-description">
                             <h3>Description</h3>
@@ -403,6 +440,18 @@
 
                     <div class="tab-content" id="team-tab">
                         <div id="team-members-list"></div>
+                    </div>
+
+                    <div class="tab-content student-only" id="team-messages-tab">
+                        <div class="team-messaging-section">
+                            <h3>Project Group Chat</h3>
+                            <p class="team-messaging-helper">Post updates to everyone on this project. Messages are shared with your project team.</p>
+                            <div id="team-chat-messages" class="messages-list team-chat-messages" style="max-height: 300px; overflow-y: auto; margin-bottom: 15px;"></div>
+                            <form id="team-message-form" class="message-form">
+                                <input type="text" id="team-chat-input" placeholder="Type a group message..." maxlength="1000" required>
+                                <button type="submit" class="btn btn-primary">Send</button>
+                            </form>
+                        </div>
                     </div>
 
 
@@ -421,6 +470,13 @@
                         <select id="new-project-class" required>
                             <option value="">Select a class</option>
                         </select>
+                        <small>The owner class for this project.</small>
+                    </div>
+                    <div class="form-group faculty-only">
+                        <label>Visible to Classes</label>
+                        <div id="new-project-visible-classes" class="project-visibility-options">
+                            <p class="class-no-projects">Select the classes that can view and join this project.</p>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label for="new-project-name">Project Name</label>
@@ -559,7 +615,7 @@
                         <div class="create-class-grid">
                             <div class="form-group">
                                 <label for="new-class-crn">CRN <span class="required">*</span></label>
-                                <input type="text" id="new-class-crn" required placeholder="e.g., 12345" maxlength="10">
+                                <input type="text" id="new-class-crn" required placeholder="e.g., 12345" maxlength="5" pattern="\d{5}" inputmode="numeric">
                                 <small>Unique Course Registration Number</small>
                             </div>
                             <div class="form-group">
@@ -729,6 +785,6 @@
     </div>
 
     <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
-    <script src="app.js?v=20260228-chatfix2"></script>
+        <script src="app.js?v=20260406-faculty-project-visibility"></script>
 </body>
 </html>

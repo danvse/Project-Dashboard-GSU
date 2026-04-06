@@ -563,7 +563,6 @@ body {
 
 .modal-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
     margin-bottom: 24px;
     padding-bottom: 16px;
@@ -572,11 +571,14 @@ body {
 
 .modal-header h2 {
     font-size: 24px;
+    flex: 1;
+    margin: 0;
 }
 
 .project-actions {
     display: flex;
     gap: 12px;
+    margin-right: 50px;
 }
 
 /* Tabs */
@@ -663,6 +665,47 @@ body {
     font-size: 14px;
 }
 
+.team-crn-group {
+    margin-bottom: 16px;
+}
+
+.team-crn-divider {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--primary-color);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+    margin-bottom: 10px;
+}
+
+.project-visibility-options {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-height: 170px;
+    overflow-y: auto;
+    background: var(--background);
+}
+
+.project-visibility-option {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    font-size: 14px;
+}
+
+.project-visibility-option input[type="checkbox"] {
+    width: auto;
+    min-width: 16px;
+    height: 16px;
+    margin: 0;
+    flex: 0 0 auto;
+}
+
 /* Messages */
 .messages-container {
     display: flex;
@@ -732,6 +775,10 @@ body {
     box-shadow: var(--shadow);
 }
 
+#project-group-chat-section .form-group {
+    margin-bottom: 12px;
+}
+
 .class-chat-messages {
     min-height: 220px;
     max-height: 360px;
@@ -740,6 +787,108 @@ body {
     margin-bottom: 16px;
     background: var(--background);
     border-radius: 8px;
+}
+
+/* Team Messaging */
+.team-messaging-section {
+    padding: 20px;
+}
+
+.team-messaging-section h3 {
+    margin-bottom: 16px;
+    font-size: 18px;
+    color: var(--text-primary);
+}
+
+.team-messaging-helper {
+    margin-bottom: 16px;
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+#team-contacts-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.team-contact-btn {
+    padding: 16px;
+    background: var(--background);
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.2s;
+    font-size: 14px;
+}
+
+.team-contact-btn:hover {
+    border-color: var(--primary-color);
+    background: var(--surface);
+}
+
+.team-contact-btn.active {
+    border-color: var(--primary-color);
+    background: #e0f2fe;
+}
+
+.team-contact-btn strong {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+}
+
+.team-contact-btn small {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+#team-message-input-section {
+    border-top: 1px solid var(--border);
+    padding-top: 20px;
+}
+
+#selected-contact-name {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--primary-color);
+}
+
+.team-chat-messages {
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 16px;
+    background: var(--background);
+    border-radius: 8px;
+    margin-bottom: 16px;
+}
+
+.team-chat-messages .message {
+    margin-bottom: 12px;
+    padding: 12px;
+    background: var(--surface);
+    border-radius: 8px;
+}
+
+.team-chat-messages .message.sent {
+    margin-left: 32px;
+    background: var(--primary-color);
+    color: white;
+}
+
+.team-chat-messages .message.received {
+    margin-right: 32px;
+}
+
+.team-message-meta {
+    display: block;
+    margin: 4px 0 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
 }
 
 /* Tasks */
@@ -1348,6 +1497,43 @@ small {
 .class-info-item span {
     font-size: 1.125rem;
     font-weight: 600;
+}
+
+.faculty-class-summary-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+
+.faculty-class-summary-card {
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 12px;
+    padding: 1rem;
+}
+
+.faculty-class-summary-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-bottom: 0.75rem;
+}
+
+.faculty-class-summary-header strong {
+    font-size: 1rem;
+}
+
+.faculty-class-summary-header span,
+.faculty-class-summary-meta {
+    font-size: 0.875rem;
+    opacity: 0.95;
+}
+
+.faculty-class-summary-meta {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .crn-stats {

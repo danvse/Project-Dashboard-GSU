@@ -4,14 +4,24 @@ from flask_login import LoginManager, UserMixin, login_user, logout_user, login_
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from sqlalchemy import inspect, text
 import os
+import re
 import secrets
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['SESSION_COOKIE_NAME'] = 'capstone_session'
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = False  # Local HTTP development
+app.config['REMEMBER_COOKIE_NAME'] = 'capstone_remember'
+app.config['REMEMBER_COOKIE_SECURE'] = False
+app.config['REMEMBER_COOKIE_HTTPONLY'] = True
+app.config['REMEMBER_COOKIE_SAMESITE'] = 'Lax'
+app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=30)
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///capstone.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -78,6 +88,17 @@ class Project(db.Model):
     messages = db.relationship('Message', backref='project', lazy=True, cascade='all, delete-orphan')
     tasks = db.relationship('Task', backref='project', lazy=True, cascade='all, delete-orphan')
     milestones = db.relationship('Milestone', backref='project', lazy=True, cascade='all, delete-orphan')
+    visibility_rules = db.relationship('ProjectVisibility', backref='project', lazy=True, cascade='all, delete-orphan')
+
+class ProjectVisibility(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
+    crn_code = db.Column(db.String(20), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('project_id', 'crn_code', name='uq_project_visibility_project_crn'),
+    )
 
 class TeamMember(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -182,6 +203,19 @@ def _is_faculty_for_crn(faculty_user_id, crn_code):
         faculty_id=faculty_user_id
     ).first() is not None
 
+def _get_faculty_crn_codes(faculty_user):
+    """Return all CRN codes owned by a faculty user, with legacy fallback to profile CRN."""
+    if faculty_user is None or faculty_user.role != 'faculty':
+        return []
+
+    owned_codes = [row[0] for row in db.session.query(CRN.crn_code).filter_by(faculty_id=faculty_user.id).all()]
+
+    # Legacy fallback: older data may only set user.crn.
+    if not owned_codes and faculty_user.crn:
+        owned_codes = [faculty_user.crn]
+
+    return owned_codes
+
 def _can_exchange_class_messages(user_a, user_b):
     if user_a is None or user_b is None:
         return False
@@ -204,14 +238,149 @@ def _serialize_class_message(message):
         'recipient_id': message.recipient_id,
         'content': message.content,
         'crn_code': message.crn_code,
-        'created_at': message.created_at.isoformat()
+        'created_at': _to_utc_iso(message.created_at)
     }
+
+def _to_utc_iso(dt):
+    if dt is None:
+        return None
+    # Stored datetimes are naive UTC. Mark them explicitly so clients convert to local time correctly.
+    return dt.replace(tzinfo=timezone.utc).isoformat().replace('+00:00', 'Z')
+
+def _resolve_class_message_crn(sender, recipient):
+    if sender is None or recipient is None:
+        return ''
+
+    # Prefer the recipient's class when messaging a student, since faculty can teach multiple classes.
+    if recipient.crn:
+        return recipient.crn
+
+    if sender.crn:
+        return sender.crn
+
+    if sender.role == 'faculty':
+        owned_class = CRN.query.filter_by(faculty_id=sender.id).order_by(CRN.created_at.asc()).first()
+        if owned_class:
+            return owned_class.crn_code
+
+    return ''
+
+def _is_valid_crn(crn_code):
+    return isinstance(crn_code, str) and re.fullmatch(r'\d{5}', crn_code.strip()) is not None
+
+def _normalize_crn_codes(crn_codes):
+    if not isinstance(crn_codes, list):
+        return []
+    return sorted({(code or '').strip() for code in crn_codes if isinstance(code, str) and code.strip()})
+
+def _get_project_visible_crn_codes(project):
+    codes = {rule.crn_code for rule in project.visibility_rules if rule.crn_code}
+    if project.crn_code:
+        codes.add(project.crn_code)
+    return sorted(codes)
+
+def _set_project_visible_crn_codes(project, crn_codes):
+    normalized_codes = _normalize_crn_codes(crn_codes)
+    ProjectVisibility.query.filter_by(project_id=project.id).delete()
+    for code in normalized_codes:
+        db.session.add(ProjectVisibility(project_id=project.id, crn_code=code))
+
+def ensure_legacy_schema_compatibility():
+    """Patch older SQLite schemas to include columns required by current code."""
+    inspector = inspect(db.engine)
+    table_names = set(inspector.get_table_names())
+    if 'project' not in table_names:
+        return
+
+    existing_cols = {col['name'] for col in inspector.get_columns('project')}
+    added_crn_code = False
+
+    with db.engine.begin() as conn:
+        if 'crn_code' not in existing_cols:
+            conn.execute(text('ALTER TABLE project ADD COLUMN crn_code VARCHAR(20)'))
+            added_crn_code = True
+
+        if 'team_number' not in existing_cols:
+            conn.execute(text('ALTER TABLE project ADD COLUMN team_number INTEGER'))
+
+        # Best-effort backfill so legacy projects still map to a class context.
+        if added_crn_code:
+            conn.execute(text('''
+                UPDATE project
+                SET crn_code = (
+                    SELECT user.crn
+                    FROM user
+                    WHERE user.id = project.creator_id
+                )
+                WHERE crn_code IS NULL
+            '''))
+
+        # Ensure legacy approved custom projects inherit the proposer's class.
+        # This handles rows created before custom approvals populated project.crn_code.
+        if 'custom_project' in table_names:
+            conn.execute(text('''
+                UPDATE project
+                SET crn_code = (
+                    SELECT user.crn
+                    FROM custom_project
+                    JOIN user ON user.id = custom_project.proposer_id
+                    WHERE custom_project.approved_project_id = project.id
+                    LIMIT 1
+                )
+                WHERE project.crn_code IS NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM custom_project
+                    WHERE custom_project.approved_project_id = project.id
+                      AND custom_project.approval_status = 'approved'
+                  )
+            '''))
+
+        if 'user_story' in table_names:
+            story_cols = {col['name'] for col in inspector.get_columns('user_story')}
+
+            if 'project_id' not in story_cols:
+                conn.execute(text('ALTER TABLE user_story ADD COLUMN project_id INTEGER'))
+
+            if 'target_crn' not in story_cols:
+                conn.execute(text('ALTER TABLE user_story ADD COLUMN target_crn VARCHAR(20)'))
+
+            if 'story_type' not in story_cols:
+                conn.execute(text("ALTER TABLE user_story ADD COLUMN story_type VARCHAR(20) DEFAULT 'announcement'"))
+
+            if 'priority' not in story_cols:
+                conn.execute(text("ALTER TABLE user_story ADD COLUMN priority VARCHAR(20) DEFAULT 'normal'"))
+
+            if 'updated_at' not in story_cols:
+                conn.execute(text('ALTER TABLE user_story ADD COLUMN updated_at DATETIME'))
+
+    # Backfill project visibility rows for legacy data.
+    # Keep this idempotent so it can run safely on every startup.
+    table_names = set(inspector.get_table_names())
+    if 'project_visibility' in table_names:
+        with db.engine.begin() as conn:
+            conn.execute(text('''
+                INSERT INTO project_visibility (project_id, crn_code, created_at)
+                SELECT project.id, project.crn_code, CURRENT_TIMESTAMP
+                FROM project
+                WHERE project.crn_code IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM project_visibility
+                      WHERE project_visibility.project_id = project.id
+                        AND project_visibility.crn_code = project.crn_code
+                  )
+            '''))
 
 # API Routes
 
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.json
+
+    crn_code = (data.get('crn') or '').strip()
+    if crn_code and not _is_valid_crn(crn_code):
+        return jsonify({'error': 'CRN must be exactly 5 digits'}), 400
     
     # Validate required fields
     if User.query.filter_by(username=data.get('username')).first():
@@ -246,7 +415,8 @@ def login():
     user = User.query.filter_by(username=data.get('username')).first()
     
     if user and check_password_hash(user.password_hash, data.get('password')):
-        login_user(user)
+        login_user(user, remember=True)
+        session.permanent = True
         return jsonify({
             'message': 'Login successful',
             'user': {
@@ -260,6 +430,21 @@ def login():
         }), 200
     
     return jsonify({'error': 'Invalid credentials'}), 401
+
+@app.route('/api/current-user', methods=['GET'])
+@login_required
+def get_current_user():
+    """Get current authenticated user data (for session validation)"""
+    return jsonify({
+        'id': current_user.id,
+        'username': current_user.username,
+        'email': current_user.email,
+        'first_name': current_user.first_name,
+        'last_name': current_user.last_name,
+        'role': current_user.role,
+        'crn': current_user.crn,
+        'title': current_user.title
+    }), 200
 
 @app.route('/api/logout', methods=['POST'])
 @login_required
@@ -310,13 +495,34 @@ def user_profile():
 def projects():
     if request.method == 'GET':
         keyword = request.args.get('keyword', '')
-        crn_filter = request.args.get('crn', '')
-        
-        # Filter projects by class - students see projects in their class
-        if crn_filter:
-            base_query = Project.query.filter(Project.crn_code == crn_filter)
+        crn_filter = (request.args.get('crn', '') or '').strip()
+
+        if current_user.role == 'faculty':
+            faculty_crn_codes = _get_faculty_crn_codes(current_user)
+            if crn_filter:
+                if crn_filter not in faculty_crn_codes:
+                    return jsonify({'error': 'Unauthorized class filter'}), 403
+                target_crn_codes = [crn_filter]
+            else:
+                target_crn_codes = faculty_crn_codes
         else:
-            base_query = Project.query.filter(Project.crn_code == current_user.crn)
+            if crn_filter and crn_filter != (current_user.crn or ''):
+                return jsonify({'error': 'Unauthorized class filter'}), 403
+            target_crn_codes = [crn_filter] if crn_filter else ([current_user.crn] if current_user.crn else [])
+
+        if not target_crn_codes:
+            return jsonify([]), 200
+
+        visible_project_ids = db.session.query(ProjectVisibility.project_id).filter(
+            ProjectVisibility.crn_code.in_(target_crn_codes)
+        )
+
+        base_query = Project.query.filter(
+            db.or_(
+                Project.crn_code.in_(target_crn_codes),
+                Project.id.in_(visible_project_ids)
+            )
+        ).distinct()
         
         if keyword:
             projects_list = base_query.filter(
@@ -335,7 +541,16 @@ def projects():
             'team_number': p.team_number,
             'status': p.status,
             'current_members': len(p.team_members),
+            'team_members': [{
+                'id': tm.student.id,
+                'name': f"{tm.student.first_name} {tm.student.last_name}",
+                'skills': tm.student.skills,
+                'crn_code': tm.student.crn,
+                'joined_at': tm.joined_at.isoformat()
+            } for tm in p.team_members],
+            'visible_crn_codes': _get_project_visible_crn_codes(p),
             'creator': {
+                'id': p.creator.id,
                 'name': f"{p.creator.first_name} {p.creator.last_name}",
                 'title': p.creator.title
             },
@@ -346,10 +561,24 @@ def projects():
         if current_user.role != 'faculty':
             return jsonify({'error': 'Only faculty can create projects'}), 403
         
-        data = request.json
-        
+        data = request.json or {}
+
         # Use provided crn_code or default to faculty's current class
-        crn_code = data.get('crn_code', current_user.crn)
+        crn_code = (data.get('crn_code') or current_user.crn or '').strip()
+        faculty_crn_codes = _get_faculty_crn_codes(current_user)
+
+        if not crn_code:
+            return jsonify({'error': 'A class is required for this project'}), 400
+        if crn_code not in faculty_crn_codes:
+            return jsonify({'error': 'You can only assign projects to your own classes'}), 403
+
+        visible_crn_codes = _normalize_crn_codes(data.get('visible_crn_codes', []))
+        if crn_code not in visible_crn_codes:
+            visible_crn_codes.append(crn_code)
+
+        invalid_codes = [code for code in visible_crn_codes if code not in faculty_crn_codes]
+        if invalid_codes:
+            return jsonify({'error': 'One or more selected classes are not owned by you'}), 403
         
         project = Project(
             name=data['name'],
@@ -361,6 +590,8 @@ def projects():
         )
         
         db.session.add(project)
+        db.session.flush()
+        _set_project_visible_crn_codes(project, visible_crn_codes)
         db.session.commit()
         
         return jsonify({'message': 'Project created successfully', 'project_id': project.id}), 201
@@ -385,8 +616,10 @@ def project_detail(project_id):
                 'id': tm.student.id,
                 'name': f"{tm.student.first_name} {tm.student.last_name}",
                 'skills': tm.student.skills,
+                'crn_code': tm.student.crn,
                 'joined_at': tm.joined_at.isoformat()
             } for tm in project.team_members],
+            'visible_crn_codes': _get_project_visible_crn_codes(project),
             'creator': {
                 'id': project.creator.id,
                 'name': f"{project.creator.first_name} {project.creator.last_name}",
@@ -425,6 +658,11 @@ def join_project(project_id):
         return jsonify({'error': 'Only students can join projects'}), 403
     
     project = Project.query.get_or_404(project_id)
+
+    # Students can only join projects visible to their own class.
+    visible_crn_codes = _get_project_visible_crn_codes(project)
+    if not current_user.crn or current_user.crn not in visible_crn_codes:
+        return jsonify({'error': 'You can only join projects for your class'}), 403
     
     # Check if already a member
     existing = TeamMember.query.filter_by(
@@ -503,7 +741,7 @@ def project_messages(project_id):
             },
             'content': m.content,
             'message_type': m.message_type,
-            'created_at': m.created_at.isoformat()
+            'created_at': _to_utc_iso(m.created_at)
         } for m in messages]), 200
     
     elif request.method == 'POST':
@@ -624,9 +862,18 @@ def project_milestones(project_id):
 @login_required
 def get_students():
     keyword = request.args.get('keyword', '')
-    
-    # Filter students by CRN - only show students in the same class
-    query = User.query.filter_by(role='student', crn=current_user.crn)
+
+    # Students see classmates from their class.
+    # Faculty see students across every class they teach.
+    if current_user.role == 'faculty':
+        faculty_class_codes = [crn.crn_code for crn in CRN.query.filter_by(faculty_id=current_user.id).all()]
+        query = User.query.filter(User.role == 'student')
+        if faculty_class_codes:
+            query = query.filter(User.crn.in_(faculty_class_codes))
+        else:
+            query = query.filter(db.false())
+    else:
+        query = User.query.filter_by(role='student', crn=current_user.crn)
     
     if keyword:
         query = query.filter(
@@ -647,50 +894,103 @@ def get_students():
         'name': f"{s.first_name} {s.last_name}",
         'skills': s.skills,
         'interests': s.interests,
-        'biography': s.biography
+        'biography': s.biography,
+        'crn_code': s.crn
     } for s in students]), 200
 
 @app.route('/api/faculty', methods=['GET'])
 @login_required
 def get_faculty():
     """Get all faculty members in the same CRN"""
-    faculty_members = User.query.filter_by(role='faculty', crn=current_user.crn).all()
+    if current_user.role == 'student':
+        faculty_members = []
+        if current_user.crn:
+            class_record = CRN.query.filter_by(crn_code=current_user.crn).first()
+            if class_record and class_record.faculty:
+                faculty_members = [{
+                    'id': class_record.faculty.id,
+                    'username': class_record.faculty.username,
+                    'first_name': class_record.faculty.first_name,
+                    'last_name': class_record.faculty.last_name,
+                    'name': f"{class_record.faculty.first_name} {class_record.faculty.last_name}",
+                    'title': class_record.faculty.title,
+                    'email': class_record.faculty.email,
+                    'crn_code': class_record.crn_code
+                }]
+    else:
+        faculty_class_codes = [crn.crn_code for crn in CRN.query.filter_by(faculty_id=current_user.id).all()]
+        if faculty_class_codes:
+            faculty_members = [{
+                'id': f.id,
+                'username': f.username,
+                'first_name': f.first_name,
+                'last_name': f.last_name,
+                'name': f"{f.first_name} {f.last_name}",
+                'title': f.title,
+                'email': f.email,
+                'crn_code': f.crn
+            } for f in User.query.filter(
+                User.role == 'faculty',
+                User.crn.in_(faculty_class_codes)
+            ).order_by(User.last_name.asc(), User.first_name.asc()).all()]
+        else:
+            faculty_members = []
     
-    return jsonify([{
-        'id': f.id,
-        'username': f.username,
-        'first_name': f.first_name,
-        'last_name': f.last_name,
-        'name': f"{f.first_name} {f.last_name}",
-        'title': f.title,
-        'email': f.email
-    } for f in faculty_members]), 200
+    return jsonify(faculty_members), 200
 
 @app.route('/api/class-messages/contacts', methods=['GET'])
 @login_required
 def class_message_contacts():
     if current_user.role == 'student':
-        # Students see faculty + other students in their class
-        users = User.query.filter(
-            User.id != current_user.id,
-            User.crn == current_user.crn
-        ).all()
+        # Students see their class faculty plus other students in the same class.
+        users = []
+        if current_user.crn:
+            class_record = CRN.query.filter_by(crn_code=current_user.crn).first()
+            if class_record and class_record.faculty and class_record.faculty.id != current_user.id:
+                users.append({
+                    'id': class_record.faculty.id,
+                    'name': f"{class_record.faculty.first_name} {class_record.faculty.last_name}",
+                    'role': 'faculty',
+                    'title': class_record.faculty.title,
+                    'email': class_record.faculty.email,
+                    'crn_code': class_record.crn_code
+                })
+
+            classmates = User.query.filter(
+                User.id != current_user.id,
+                User.crn == current_user.crn,
+                User.role == 'student'
+            ).order_by(User.last_name.asc(), User.first_name.asc()).all()
+            users.extend({
+                'id': user.id,
+                'name': f"{user.first_name} {user.last_name}",
+                'role': user.role,
+                'title': user.title,
+                'email': user.email,
+                'crn_code': user.crn
+            } for user in classmates)
     elif current_user.role == 'faculty':
-        # Faculty sees all students in their class
-        users = User.query.filter(
-            User.id != current_user.id,
-            User.crn == current_user.crn
-        ).all()
+        # Faculty sees all students across every class they teach.
+        faculty_class_codes = [crn.crn_code for crn in CRN.query.filter_by(faculty_id=current_user.id).all()]
+        users = []
+        if faculty_class_codes:
+            users = [{
+                'id': user.id,
+                'name': f"{user.first_name} {user.last_name}",
+                'role': user.role,
+                'title': user.title,
+                'email': user.email,
+                'crn_code': user.crn
+            } for user in User.query.filter(
+                User.id != current_user.id,
+                User.role == 'student',
+                User.crn.in_(faculty_class_codes)
+            ).order_by(User.last_name.asc(), User.first_name.asc()).all()]
     else:
         users = []
 
-    return jsonify([{
-        'id': user.id,
-        'name': f"{user.first_name} {user.last_name}",
-        'role': user.role,
-        'title': user.title,
-        'email': user.email
-    } for user in users]), 200
+    deduped_users = {user['id']: user for user in users}.values()
+    return jsonify(list(deduped_users)), 200
 
 @app.route('/api/class-messages/<int:other_user_id>', methods=['GET'])
 @login_required
@@ -726,7 +1026,7 @@ def create_class_message():
     message = ClassMessage(
         sender_id=current_user.id,
         recipient_id=recipient.id,
-        crn_code=current_user.crn or recipient.crn or '',
+        crn_code=_resolve_class_message_crn(current_user, recipient),
         content=content
     )
 
@@ -768,7 +1068,7 @@ def send_class_message(data):
     message = ClassMessage(
         sender_id=current_user.id,
         recipient_id=recipient.id,
-        crn_code=current_user.crn,
+        crn_code=_resolve_class_message_crn(current_user, recipient),
         content=content
     )
 
@@ -783,21 +1083,25 @@ def send_class_message(data):
 @login_required
 def get_class_info():
     """Get information about the current user's class"""
-    if not current_user.crn:
+    class_crn_code = current_user.crn
+
+    # Faculty may own classes even if their profile crn field is unset.
+    if current_user.role == 'faculty' and not class_crn_code:
+        owned_class = CRN.query.filter_by(faculty_id=current_user.id).order_by(CRN.created_at.asc()).first()
+        if owned_class:
+            class_crn_code = owned_class.crn_code
+
+    if not class_crn_code:
         return jsonify({'error': 'No class assigned'}), 404
-    
-    # Get the CRN details
-    crn = CRN.query.filter_by(crn_code=current_user.crn).first()
-    
+
+    crn = CRN.query.filter_by(crn_code=class_crn_code).first()
     if not crn:
         return jsonify({'error': 'Class not found'}), 404
-    
-    # Count students and faculty in this class
-    student_count = User.query.filter_by(role='student', crn=current_user.crn).count()
-    faculty_count = User.query.filter_by(role='faculty', crn=current_user.crn).count()
-    project_count = Project.query.join(User, Project.creator_id == User.id).filter(
-        User.crn == current_user.crn
-    ).count()
+
+    # Count class participants and projects by the actual class code.
+    student_count = User.query.filter_by(role='student', crn=class_crn_code).count()
+    faculty_count = User.query.filter_by(role='faculty', crn=class_crn_code).count()
+    project_count = Project.query.filter_by(crn_code=class_crn_code).count()
     
     return jsonify({
         'crn_code': crn.crn_code,
@@ -979,20 +1283,24 @@ def manage_crns():
         
         if not data.get('crn_code') or not data.get('course_name'):
             return jsonify({'error': 'Class code and course name are required'}), 400
+
+        crn_code = data.get('crn_code', '').strip()
+        if not _is_valid_crn(crn_code):
+            return jsonify({'error': 'Class code must be exactly 5 digits'}), 400
         
         # Check if CRN already exists
-        existing_crn = CRN.query.filter_by(crn_code=data['crn_code']).first()
+        existing_crn = CRN.query.filter_by(crn_code=crn_code).first()
         if existing_crn:
             return jsonify({'error': 'Class code already exists'}), 400
         
         crn = CRN(
-            crn_code=data['crn_code'],
+            crn_code=crn_code,
             course_name=data['course_name'],
             faculty_id=current_user.id
         )
         
         # Assign faculty to this class
-        current_user.crn = data['crn_code']
+        current_user.crn = crn_code
         
         db.session.add(crn)
         db.session.commit()
@@ -1037,8 +1345,15 @@ def get_my_classes():
         # Count students in this class
         student_count = User.query.filter_by(role='student', crn=cls.crn_code).count()
         
-        # Get projects in this class
-        class_projects = Project.query.filter_by(crn_code=cls.crn_code).all()
+        visible_project_ids = db.session.query(ProjectVisibility.project_id).filter(
+            ProjectVisibility.crn_code == cls.crn_code
+        )
+        class_projects = Project.query.filter(
+            db.or_(
+                Project.crn_code == cls.crn_code,
+                Project.id.in_(visible_project_ids)
+            )
+        ).distinct().all()
         
         projects_data = [{
             'id': p.id,
@@ -1049,8 +1364,10 @@ def get_my_classes():
             'status': p.status,
             'team_members': [{
                 'id': tm.student.id,
-                'name': f"{tm.student.first_name} {tm.student.last_name}"
-            } for tm in p.team_members]
+                'name': f"{tm.student.first_name} {tm.student.last_name}",
+                'crn_code': tm.student.crn
+            } for tm in p.team_members],
+            'visible_crn_codes': _get_project_visible_crn_codes(p)
         } for p in class_projects]
         
         result.append({
@@ -1104,6 +1421,9 @@ def join_class():
     if not crn_code:
         return jsonify({'error': 'Please enter a CRN code'}), 400
 
+    if not _is_valid_crn(crn_code):
+        return jsonify({'error': 'CRN must be exactly 5 digits'}), 400
+
     crn = CRN.query.filter_by(crn_code=crn_code).first()
     if not crn:
         return jsonify({'error': 'Class not found. Please check the CRN and try again.'}), 404
@@ -1134,11 +1454,15 @@ def custom_projects():
     """
     if request.method == 'GET':
         if current_user.role == 'faculty':
-            # Show all proposals from students enrolled in this faculty's CRN
+            # Show proposals from students enrolled in classes owned by this faculty.
+            faculty_crn_codes = _get_faculty_crn_codes(current_user)
+            if not faculty_crn_codes:
+                return jsonify([]), 200
+
             proposals = (
                 CustomProject.query
                 .join(User, CustomProject.proposer_id == User.id)
-                .filter(User.crn == current_user.crn)
+                .filter(User.crn.in_(faculty_crn_codes))
                 .order_by(CustomProject.created_at.desc())
                 .all()
             )
@@ -1199,9 +1523,10 @@ def review_custom_project(proposal_id):
 
     proposal = CustomProject.query.get_or_404(proposal_id)
 
-    # Make sure the proposer is in the same CRN as the faculty
+    # Make sure the proposer is in a class owned by this faculty.
     proposer = User.query.get(proposal.proposer_id)
-    if proposer.crn != current_user.crn:
+    faculty_crn_codes = _get_faculty_crn_codes(current_user)
+    if not proposer or proposer.crn not in faculty_crn_codes:
         return jsonify({'error': 'Unauthorized: proposal is not from your class'}), 403
 
     if proposal.approval_status != 'pending':
@@ -1225,10 +1550,13 @@ def review_custom_project(proposal_id):
             description=proposal.description,
             capacity=proposal.capacity,
             course=proposal.course,
+            # Keep approved custom projects scoped to the proposer's class repository.
+            crn_code=proposer.crn,
             creator_id=current_user.id
         )
         db.session.add(new_project)
         db.session.flush()  # get new_project.id before commit
+        _set_project_visible_crn_codes(new_project, [proposer.crn] if proposer.crn else [])
 
         proposal.approved_project_id = new_project.id
         db.session.commit()
@@ -1247,6 +1575,7 @@ def review_custom_project(proposal_id):
 # Initialize database
 with app.app_context():
     db.create_all()
+    ensure_legacy_schema_compatibility()
 
 if __name__ == '__main__':
     from waitress import serve

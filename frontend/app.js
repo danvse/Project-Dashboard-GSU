@@ -1,5 +1,7 @@
 // API Configuration
-const API_URL = 'http://localhost:5001/api';
+const API_HOST = window.location.hostname || 'localhost';
+const API_PROTOCOL = window.location.protocol === 'file:' ? 'http:' : window.location.protocol;
+const API_URL = `${API_PROTOCOL}//${API_HOST}:5001/api`;
 
 // Global State
 let currentUser = null;
@@ -12,30 +14,93 @@ let classSocket = null;
 let classChatContacts = [];
 let activeClassChatRecipientId = null;
 let classChatRetryCount = 0;
+let activeProjectGroupChatId = null;
+let projectChatPollTimer = null;
+let classChatPollTimer = null;
+let chatFocusRefreshAttached = false;
+
+const PRIMARY_USER_CACHE_KEY = 'user';
+const FALLBACK_USER_CACHE_KEY = 'auth_user';
+
+function cacheUser(user) {
+    const serialized = JSON.stringify(user);
+    localStorage.setItem(PRIMARY_USER_CACHE_KEY, serialized);
+    localStorage.setItem(FALLBACK_USER_CACHE_KEY, serialized);
+}
+
+function getCachedUser() {
+    const candidates = [
+        localStorage.getItem(PRIMARY_USER_CACHE_KEY),
+        localStorage.getItem(FALLBACK_USER_CACHE_KEY)
+    ];
+
+    for (const raw of candidates) {
+        if (!raw) continue;
+        try {
+            return JSON.parse(raw);
+        } catch (_) {
+            // Ignore malformed cache value and try the next source.
+        }
+    }
+
+    return null;
+}
+
+function clearCachedUser() {
+    localStorage.removeItem(PRIMARY_USER_CACHE_KEY);
+    localStorage.removeItem(FALLBACK_USER_CACHE_KEY);
+}
+
+function safeShowDashboard() {
+    try {
+        showDashboard();
+        return true;
+    } catch (error) {
+        console.error('Dashboard render failed, keeping authenticated dashboard shell visible:', error);
+        // Keep user on dashboard page even if a widget fails to initialize.
+        showPage('dashboard-page');
+        return false;
+    }
+}
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
-    initializeEventListeners();
+    try {
+        initializeEventListeners();
+    } catch (error) {
+        console.error('Startup listener initialization failed:', error);
+    }
     checkAuthStatus();
 });
 
 // Event Listeners
 function initializeEventListeners() {
+    const bindById = (id, eventName, handler) => {
+        const el = document.getElementById(id);
+        if (!el) {
+            console.warn(`Missing element #${id}, skipping ${eventName} listener.`);
+            return false;
+        }
+        el.addEventListener(eventName, handler);
+        return true;
+    };
+
     // Auth Forms
-    document.getElementById('login-form').addEventListener('submit', handleLogin);
-    document.getElementById('register-form').addEventListener('submit', handleRegister);
-    document.getElementById('show-register').addEventListener('click', (e) => {
+    bindById('login-form', 'submit', handleLogin);
+    bindById('register-form', 'submit', handleRegister);
+    bindById('show-register', 'click', (e) => {
         e.preventDefault();
         showPage('register-page');
     });
-    document.getElementById('show-login').addEventListener('click', (e) => {
+    bindById('show-login', 'click', (e) => {
         e.preventDefault();
         showPage('login-page');
     });
 
     // Role-based fields
-    document.getElementById('role').addEventListener('change', (e) => {
+    bindById('role', 'change', (e) => {
         const facultyFields = document.getElementById('faculty-fields');
+        if (!facultyFields) return;
         if (e.target.value === 'faculty') {
             facultyFields.style.display = 'block';
         } else {
@@ -44,7 +109,7 @@ function initializeEventListeners() {
     });
 
     // Navigation
-    document.getElementById('logout-btn').addEventListener('click', handleLogout);
+    bindById('logout-btn', 'click', handleLogout);
     document.querySelectorAll('.nav-link').forEach(link => {
         link.addEventListener('click', (e) => {
             e.preventDefault();
@@ -58,19 +123,19 @@ function initializeEventListeners() {
     });
 
     // Search
-    document.getElementById('project-search').addEventListener('input', (e) => {
+    bindById('project-search', 'input', (e) => {
         searchProjects(e.target.value);
     });
     
-    document.getElementById('student-search').addEventListener('input', (e) => {
+    bindById('student-search', 'input', (e) => {
         searchStudents(e.target.value);
     });
 
     // Profile Form
-    document.getElementById('profile-form').addEventListener('submit', handleProfileUpdate);
+    bindById('profile-form', 'submit', handleProfileUpdate);
 
     // Create Project Form
-    document.getElementById('create-project-form').addEventListener('submit', handleCreateProject);
+    bindById('create-project-form', 'submit', handleCreateProject);
 
     // Class chat
     const classChatRecipient = document.getElementById('class-chat-recipient');
@@ -91,12 +156,33 @@ function initializeEventListeners() {
         classChatForm.addEventListener('submit', sendClassChatMessage);
     }
 
+    // Dashboard project group chat
+    const projectGroupChatSelect = document.getElementById('project-group-chat-select');
+    const projectGroupChatForm = document.getElementById('project-group-chat-form');
+    if (projectGroupChatSelect) {
+        projectGroupChatSelect.addEventListener('change', (e) => {
+            const projectId = parseInt(e.target.value, 10);
+            if (!projectId) {
+                activeProjectGroupChatId = null;
+                document.getElementById('project-group-chat-messages').innerHTML = '<div class="empty-state"><p>Select a project to view messages.</p></div>';
+                return;
+            }
+            activeProjectGroupChatId = projectId;
+            loadDashboardProjectGroupMessages(projectId);
+        });
+    }
+    if (projectGroupChatForm) {
+        projectGroupChatForm.addEventListener('submit', sendDashboardProjectGroupMessage);
+    }
+
     // Project Modal
     setupProjectModal();
     setupCreateProjectModal();
     setupCreateTaskModal();
     setupCreateMilestoneModal();
+    setupCustomProjectsEventListeners();
 }
+
 
 // Authentication
 async function handleLogin(e) {
@@ -119,8 +205,10 @@ async function handleLogin(e) {
         
         if (response.ok) {
             currentUser = data.user;
-            localStorage.setItem('user', JSON.stringify(data.user));
-            showDashboard();
+            cacheUser(data.user);
+            if (!safeShowDashboard()) {
+                alert('Login succeeded, but parts of the dashboard failed to load. Please refresh once.');
+            }
         } else {
             alert(data.error || 'Login failed');
         }
@@ -182,7 +270,9 @@ async function handleLogout() {
         }
         
         currentUser = null;
-        localStorage.removeItem('user');
+        stopProjectChatAutoRefresh();
+        stopClassChatAutoRefresh();
+        clearCachedUser();
         localStorage.removeItem('currentView');
         showPage('login-page');
     } catch (error) {
@@ -191,33 +281,237 @@ async function handleLogout() {
 }
 
 function checkAuthStatus() {
-    const savedUser = localStorage.getItem('user');
+    const savedUser = getCachedUser();
     if (savedUser) {
-        currentUser = JSON.parse(savedUser);
-        showDashboard();
-    } else {
-        // Load available CRNs for registration
+        currentUser = savedUser;
+        safeShowDashboard();
+        // Validate session with server and refresh user data if needed
+        validateSessionWithServer();
+        return;
+    }
+
+    restoreSessionFromServer();
+}
+
+async function restoreSessionFromServer() {
+    try {
+        const response = await fetch(`${API_URL}/current-user`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            loadCRNs();
+            return;
+        }
+
+        const serverUser = await response.json();
+        currentUser = serverUser;
+        cacheUser(serverUser);
+        safeShowDashboard();
+    } catch (error) {
+        console.warn('Server session restore failed:', error);
         loadCRNs();
     }
 }
 
+async function validateSessionWithServer() {
+    /**
+     * Validate the cached user session against the server.
+     * This prevents stale localStorage data from causing UI issues after page refresh.
+     */
+    try {
+        const response = await fetch(`${API_URL}/current-user`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            // Do not force logout on refresh validation failure; keep cached session UX stable.
+            console.warn('Session validation returned non-OK status, keeping cached session for now.');
+            return;
+        }
+
+        const serverUser = await response.json();
+        
+        // Check if server data differs from cached data
+        // (important fields: crn, role, first_name, last_name)
+        const cacheStale = 
+            currentUser.crn !== serverUser.crn ||
+            currentUser.role !== serverUser.role ||
+            currentUser.first_name !== serverUser.first_name ||
+            currentUser.last_name !== serverUser.last_name;
+
+        if (cacheStale) {
+            // Update cache with fresh server data
+            currentUser = serverUser;
+            cacheUser(currentUser);
+            
+            // Refresh dashboard with updated user data
+            showDashboard();
+            
+            // Reload critical data
+            loadClassInfo();
+            loadClassChatContacts();
+        }
+    } catch (error) {
+        console.warn('Session validation failed, continuing with cached data:', error);
+        // Continue with cached data if validation fails
+    }
+}
+
 // Dashboard
+function getWelcomeDisplayName(user) {
+    if (!user) return 'User';
+
+    const firstName = (user.first_name || '').trim();
+    const lastName = (user.last_name || '').trim();
+    const title = (user.title || '').trim();
+
+    if (user.role === 'faculty') {
+        if (title && lastName) return `${title} ${lastName}`;
+        if (firstName && lastName) return `${firstName} ${lastName}`;
+        if (lastName) return lastName;
+        if (firstName) return firstName;
+    }
+
+    return firstName || user.username || 'User';
+}
+
+function formatChatTimestamp(timestamp) {
+    if (!timestamp) return '';
+
+    const hasTimezone = /Z$|[+-]\d\d:\d\d$/.test(timestamp);
+    const normalized = hasTimezone ? timestamp : `${timestamp}Z`;
+    const date = new Date(normalized);
+
+    if (Number.isNaN(date.getTime())) {
+        return timestamp;
+    }
+
+    return date.toLocaleString();
+}
+
+function startProjectChatAutoRefresh() {
+    if (projectChatPollTimer) return;
+
+    projectChatPollTimer = setInterval(() => {
+        if (!currentUser || document.hidden) return;
+
+        const overviewView = document.getElementById('overview-view');
+        const groupSection = document.getElementById('project-group-chat-section');
+        if (
+            activeProjectGroupChatId &&
+            overviewView && overviewView.classList.contains('active') &&
+            groupSection && groupSection.style.display !== 'none'
+        ) {
+            loadDashboardProjectGroupMessages(activeProjectGroupChatId);
+        }
+
+        const projectModal = document.getElementById('project-modal');
+        const teamMessagesTab = document.getElementById('team-messages-tab');
+        if (
+            projectModal && projectModal.classList.contains('active') &&
+            teamMessagesTab && teamMessagesTab.classList.contains('active') &&
+            currentProject && currentProject.id
+        ) {
+            loadMessages(currentProject.id);
+        }
+    }, 3000);
+}
+
+function stopProjectChatAutoRefresh() {
+    if (!projectChatPollTimer) return;
+    clearInterval(projectChatPollTimer);
+    projectChatPollTimer = null;
+}
+
+function startClassChatAutoRefresh() {
+    if (classChatPollTimer) return;
+
+    classChatPollTimer = setInterval(() => {
+        if (!currentUser || document.hidden || !activeClassChatRecipientId) return;
+
+        const overviewView = document.getElementById('overview-view');
+        if (overviewView && overviewView.classList.contains('active')) {
+            loadClassChatHistory(activeClassChatRecipientId);
+        }
+    }, 3000);
+}
+
+function stopClassChatAutoRefresh() {
+    if (!classChatPollTimer) return;
+    clearInterval(classChatPollTimer);
+    classChatPollTimer = null;
+}
+
+function refreshVisibleChatsNow() {
+    if (!currentUser) return;
+
+    const overviewView = document.getElementById('overview-view');
+    const overviewActive = overviewView && overviewView.classList.contains('active');
+
+    if (overviewActive && activeClassChatRecipientId) {
+        loadClassChatHistory(activeClassChatRecipientId);
+    }
+
+    const groupSection = document.getElementById('project-group-chat-section');
+    if (
+        overviewActive &&
+        activeProjectGroupChatId &&
+        groupSection &&
+        groupSection.style.display !== 'none'
+    ) {
+        loadDashboardProjectGroupMessages(activeProjectGroupChatId);
+    }
+
+    const projectModal = document.getElementById('project-modal');
+    const teamMessagesTab = document.getElementById('team-messages-tab');
+    if (
+        projectModal &&
+        projectModal.classList.contains('active') &&
+        teamMessagesTab &&
+        teamMessagesTab.classList.contains('active') &&
+        currentProject &&
+        currentProject.id
+    ) {
+        loadMessages(currentProject.id);
+    }
+}
+
+function setupChatFocusRefreshTriggers() {
+    if (chatFocusRefreshAttached) return;
+
+    const runImmediateRefresh = () => {
+        if (document.hidden) return;
+        refreshVisibleChatsNow();
+    };
+
+    window.addEventListener('focus', runImmediateRefresh);
+    document.addEventListener('visibilitychange', runImmediateRefresh);
+    chatFocusRefreshAttached = true;
+}
+
 function showDashboard() {
     showPage('dashboard-page');
     
     // Update user info
-    const userName = `${currentUser.first_name} ${currentUser.last_name}`;
+    const userName = [currentUser.first_name, currentUser.last_name]
+        .filter(Boolean)
+        .join(' ') || currentUser.username || 'User';
     document.getElementById('user-name').textContent = userName;
-    document.getElementById('welcome-name').textContent = currentUser.first_name;
+    document.getElementById('welcome-name').textContent = getWelcomeDisplayName(currentUser);
     
     // Show/hide role-specific elements
     updateRoleVisibility();
     
     // Load initial data
     loadProjects();
+    loadMyProjects();
     loadStudents();
     loadUserProfile();
     initializeClassChat();
+    startProjectChatAutoRefresh();
+    startClassChatAutoRefresh();
+    setupChatFocusRefreshTriggers();
     
     // Restore last viewed tab, or default to overview
     const savedView = localStorage.getItem('currentView') || 'overview';
@@ -260,8 +554,18 @@ function showView(viewName) {
     document.querySelectorAll('.dashboard-view').forEach(view => {
         view.classList.remove('active');
     });
-    
-    document.getElementById(`${viewName}-view`).classList.add('active');
+
+    const requestedView = document.getElementById(`${viewName}-view`);
+    if (!requestedView) {
+        viewName = 'overview';
+    }
+
+    const activeView = document.getElementById(`${viewName}-view`);
+    if (!activeView) {
+        return;
+    }
+
+    activeView.classList.add('active');
     
     // Persist current view for page refresh
     localStorage.setItem('currentView', viewName);
@@ -283,6 +587,7 @@ function showView(viewName) {
         loadUserStories();
         loadClassInfo();
         loadClassChatContacts();
+        refreshVisibleChatsNow();
     }
 }
 
@@ -419,6 +724,8 @@ async function loadMyProjects() {
         const myProjects = allProjects.filter(p => 
             p.team_members && p.team_members.some(m => m.id === currentUser.id)
         );
+
+        updateDashboardProjectGroupChat(myProjects);
         
         document.getElementById('project-count').textContent = myProjects.length;
         
@@ -443,6 +750,109 @@ async function loadMyProjects() {
         `).join('');
     } catch (error) {
         console.error('Error loading my projects:', error);
+    }
+}
+
+function updateDashboardProjectGroupChat(myProjects) {
+    const section = document.getElementById('project-group-chat-section');
+    const select = document.getElementById('project-group-chat-select');
+    const messages = document.getElementById('project-group-chat-messages');
+    const input = document.getElementById('project-group-chat-input');
+    if (!section || !select || !messages || !input) return;
+
+    if (!currentUser || currentUser.role !== 'student' || !myProjects || myProjects.length === 0) {
+        section.style.display = 'none';
+        activeProjectGroupChatId = null;
+        return;
+    }
+
+    section.style.display = 'block';
+    select.innerHTML = myProjects.map(project =>
+        `<option value="${project.id}">${escapeHtml(project.name)}</option>`
+    ).join('');
+
+    if (!activeProjectGroupChatId || !myProjects.some(p => p.id === activeProjectGroupChatId)) {
+        activeProjectGroupChatId = myProjects[0].id;
+    }
+
+    select.value = String(activeProjectGroupChatId);
+    loadDashboardProjectGroupMessages(activeProjectGroupChatId);
+}
+
+async function loadDashboardProjectGroupMessages(projectId) {
+    const container = document.getElementById('project-group-chat-messages');
+    if (!container || !projectId) return;
+
+    try {
+        const response = await fetch(`${API_URL}/projects/${projectId}/messages`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            container.innerHTML = '<div class="empty-state"><p>Unable to load project messages.</p></div>';
+            return;
+        }
+
+        const messages = await response.json();
+        if (!messages || messages.length === 0) {
+            container.innerHTML = '<div class="empty-state"><p>No project messages yet.</p></div>';
+            return;
+        }
+
+        container.innerHTML = messages.map(msg => `
+            <div class="message">
+                <div class="message-header">
+                    <span class="message-sender">${escapeHtml(msg.sender.name)}</span>
+                    <span class="message-time">${formatChatTimestamp(msg.created_at)}</span>
+                </div>
+                <div class="message-content">${escapeHtml(msg.content)}</div>
+            </div>
+        `).join('');
+        container.scrollTop = container.scrollHeight;
+    } catch (error) {
+        console.error('Error loading dashboard project group messages:', error);
+        container.innerHTML = '<div class="empty-state"><p>Unable to load project messages.</p></div>';
+    }
+}
+
+async function sendDashboardProjectGroupMessage(e) {
+    e.preventDefault();
+
+    if (!activeProjectGroupChatId) {
+        alert('Please select a project first.');
+        return;
+    }
+
+    const input = document.getElementById('project-group-chat-input');
+    if (!input) return;
+
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+        const response = await fetch(`${API_URL}/projects/${activeProjectGroupChatId}/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                content,
+                message_type: 'group'
+            })
+        });
+
+        if (!response.ok) {
+            const errorPayload = await response.json();
+            alert(errorPayload.error || 'Failed to send project group message');
+            return;
+        }
+
+        input.value = '';
+        await loadDashboardProjectGroupMessages(activeProjectGroupChatId);
+    } catch (error) {
+        console.error('Error sending dashboard project group message:', error);
+        alert('An error occurred while sending your project group message.');
     }
 }
 
@@ -475,6 +885,9 @@ function displayStudents(studentsList) {
     grid.innerHTML = studentsList.map(student => {
         // Don't show message icon for yourself
         const showMsg = currentUser && student.id !== currentUser.id;
+        const classBadge = currentUser && currentUser.role === 'faculty' && student.crn_code
+            ? `<span class="tag">CRN ${escapeHtml(student.crn_code)}</span>`
+            : '';
         return `
         <div class="student-card">
             <div class="student-card-header">
@@ -483,6 +896,7 @@ function displayStudents(studentsList) {
             </div>
             <p class="student-bio">${student.biography || 'No biography provided'}</p>
             <div class="student-tags">
+                ${classBadge}
                 ${student.skills ? student.skills.split(',').map(s => 
                     `<span class="tag">${s.trim()}</span>`
                 ).join('') : ''}
@@ -621,6 +1035,7 @@ function displayFacultyClasses(classes) {
                     <div class="class-project-info">
                         <span class="class-project-name">${escapeHtml(p.name)}</span>
                         <span class="class-project-members">${p.current_members}/${p.capacity} members</span>
+                        <span class="class-project-members">Visible to: ${(p.visible_crn_codes || []).map(code => escapeHtml(code)).join(', ') || 'Not set'}</span>
                     </div>
                     <div class="class-project-team">
                         <label for="team-num-${p.id}">Team #</label>
@@ -732,11 +1147,17 @@ async function handleProfileUpdate(e) {
 // Project Modal
 function setupProjectModal() {
     const modal = document.getElementById('project-modal');
+    if (!modal) {
+        console.warn('Missing #project-modal; skipping modal setup.');
+        return;
+    }
+
     const closeBtn = modal.querySelector('.close');
-    
-    closeBtn.onclick = () => {
-        modal.classList.remove('active');
-    };
+    if (closeBtn) {
+        closeBtn.onclick = () => {
+            modal.classList.remove('active');
+        };
+    }
     
     window.addEventListener('click', (event) => {
         if (event.target === modal) {
@@ -763,18 +1184,34 @@ function setupProjectModal() {
                 loadTasks(currentProject.id);
             } else if (tabName === 'milestones') {
                 loadMilestones(currentProject.id);
+            } else if (tabName === 'team-messages') {
+                loadMessages(currentProject.id);
             }
         });
     });
     
     // Join/Leave buttons
-    document.getElementById('join-project-btn').addEventListener('click', joinProject);
-    document.getElementById('leave-project-btn').addEventListener('click', leaveProject);
+    const joinBtn = document.getElementById('join-project-btn');
+    if (joinBtn) {
+        joinBtn.addEventListener('click', joinProject);
+    }
+
+    const leaveBtn = document.getElementById('leave-project-btn');
+    if (leaveBtn) {
+        leaveBtn.addEventListener('click', leaveProject);
+    }
     
     // Message form (legacy modal may not include this form)
     const messageForm = document.getElementById('message-form');
     if (messageForm) {
         messageForm.addEventListener('submit', sendMessage);
+    }
+
+    // Project group chat form
+    const teamMessageForm = document.getElementById('team-message-form');
+    if (teamMessageForm) {
+        teamMessageForm.removeEventListener('submit', sendTeamMessage);
+        teamMessageForm.addEventListener('submit', sendTeamMessage);
     }
 }
 
@@ -783,125 +1220,143 @@ async function openProjectModal(projectId) {
         const response = await fetch(`${API_URL}/projects/${projectId}`, {
             credentials: 'include'
         });
-        
+
+        if (!response.ok) {
+            const errorPayload = await response.json();
+            alert(errorPayload.error || 'Failed to load project details');
+            return;
+        }
+
         currentProject = await response.json();
-        
-        // Populate modal
-        document.getElementById('project-modal-title').textContent = currentProject.name;
-        document.getElementById('project-course').textContent = currentProject.course;
-        document.getElementById('project-capacity').textContent = 
-            `${currentProject.current_members}/${currentProject.capacity}`;
-        document.getElementById('project-status').textContent = currentProject.status;
-        document.getElementById('project-creator').textContent = currentProject.creator.name;
-        document.getElementById('project-description').textContent = currentProject.description;
-        
-        // Update join/leave buttons visibility
+
+        document.getElementById('project-modal-title').textContent = currentProject.name || '';
+        document.getElementById('project-course').textContent = currentProject.course || '';
+        document.getElementById('project-capacity').textContent = `${currentProject.current_members || 0}/${currentProject.capacity || 0}`;
+        document.getElementById('project-status').textContent = currentProject.status || '';
+        document.getElementById('project-creator').textContent = currentProject.creator ? currentProject.creator.name : '';
+        const visibleCrns = currentProject.visible_crn_codes || (currentProject.crn_code ? [currentProject.crn_code] : []);
+        document.getElementById('project-visible-classes').textContent = visibleCrns.length ? visibleCrns.join(', ') : 'Not set';
+        document.getElementById('project-description').textContent = currentProject.description || '';
+
+        displayTeamMembers(currentProject.team_members || []);
+
         const joinBtn = document.getElementById('join-project-btn');
         const leaveBtn = document.getElementById('leave-project-btn');
-        
+        const isMember = (currentProject.team_members || []).some(m => m.id === currentUser.id);
+        const isFull = currentProject.status === 'full' || (currentProject.current_members || 0) >= (currentProject.capacity || 0);
+
         if (currentUser.role === 'student') {
-            const isMember = currentProject.team_members.some(m => m.id === currentUser.id);
-            const isFull = currentProject.status === 'full';
-            
-            // Show join button if: not a member AND project not full
-            if (!isMember && !isFull) {
-                joinBtn.style.display = 'inline-block';
-                leaveBtn.style.display = 'none';
-            } 
-            // Show leave button if: is a member
-            else if (isMember) {
-                joinBtn.style.display = 'none';
-                leaveBtn.style.display = 'inline-block';
-            }
-            // Hide both if: not a member AND project is full
-            else {
-                joinBtn.style.display = 'none';
-                leaveBtn.style.display = 'none';
-            }
+            joinBtn.style.display = (!isMember && !isFull) ? 'inline-block' : 'none';
+            leaveBtn.style.display = isMember ? 'inline-block' : 'none';
         } else {
-            // Faculty shouldn't see these buttons
             joinBtn.style.display = 'none';
             leaveBtn.style.display = 'none';
         }
-        
-        // Load team members
-        displayTeamMembers(currentProject.team_members);
-        
-        // Show modal
+
         document.getElementById('project-modal').classList.add('active');
-        
-        // Reset to overview tab
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-        document.querySelector('.tab-btn[data-tab="overview"]').classList.add('active');
-        document.getElementById('overview-tab').classList.add('active');
-        
+
+        const modal = document.getElementById('project-modal');
+        modal.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        modal.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        const overviewBtn = modal.querySelector('.tab-btn[data-tab="overview"]');
+        if (overviewBtn) overviewBtn.classList.add('active');
+        const overviewTab = document.getElementById('overview-tab');
+        if (overviewTab) overviewTab.classList.add('active');
     } catch (error) {
-        console.error('Error loading project:', error);
-        alert('Failed to load project details');
+        console.error('Error opening project modal:', error);
+        alert('An error occurred while loading this project.');
     }
 }
 
 function displayTeamMembers(members) {
     const container = document.getElementById('team-members-list');
-    
-    if (members.length === 0) {
-        container.innerHTML = '<div class="empty-state"><h3>No team members yet</h3></div>';
+    if (!container) return;
+
+    if (!members || members.length === 0) {
+        container.innerHTML = '<div class="empty-state"><h3>No team members yet</h3><p>Be the first to join this project.</p></div>';
         return;
     }
-    
+
+    if (currentUser && currentUser.role === 'faculty') {
+        const groupedMembers = members.reduce((acc, member) => {
+            const key = member.crn_code || 'unassigned';
+            if (!acc[key]) acc[key] = [];
+            acc[key].push(member);
+            return acc;
+        }, {});
+
+        container.innerHTML = Object.keys(groupedMembers).sort().map(crn => {
+            const groupLabel = crn === 'unassigned' ? 'No CRN' : `CRN ${escapeHtml(crn)}`;
+            const group = groupedMembers[crn];
+            return `
+                <div class="team-crn-group">
+                    <div class="team-crn-divider">${groupLabel} (${group.length})</div>
+                    ${group.map(member => `
+                        <div class="team-member">
+                            <h4>${escapeHtml(member.name || 'Unknown member')}</h4>
+                            <p>${escapeHtml(member.skills || 'No skills listed')}</p>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }).join('');
+        return;
+    }
+
     container.innerHTML = members.map(member => `
         <div class="team-member">
-            <h4>${member.name}</h4>
-            <p>${member.skills || 'No skills listed'}</p>
-            <small>Joined: ${new Date(member.joined_at).toLocaleDateString()}</small>
+            <h4>${escapeHtml(member.name || 'Unknown member')}</h4>
+            <p>${escapeHtml(member.skills || 'No skills listed')}</p>
         </div>
     `).join('');
 }
 
 async function joinProject() {
+    if (!currentProject) return;
+
     try {
         const response = await fetch(`${API_URL}/projects/${currentProject.id}/join`, {
             method: 'POST',
             credentials: 'include'
         });
-        
+
         const data = await response.json();
-        
-        if (response.ok) {
-            alert('Successfully joined project!');
-            openProjectModal(currentProject.id);
-            loadProjects();
-        } else {
+        if (!response.ok) {
             alert(data.error || 'Failed to join project');
+            return;
         }
+
+        await loadProjects();
+        await loadMyProjects();
+        await openProjectModal(currentProject.id);
     } catch (error) {
         console.error('Error joining project:', error);
-        alert('An error occurred');
+        alert('An error occurred while joining the project.');
     }
 }
 
 async function leaveProject() {
+    if (!currentProject) return;
     if (!confirm('Are you sure you want to leave this project?')) return;
-    
+
     try {
         const response = await fetch(`${API_URL}/projects/${currentProject.id}/leave`, {
             method: 'POST',
             credentials: 'include'
         });
-        
+
         const data = await response.json();
-        
-        if (response.ok) {
-            alert('Successfully left project');
-            document.getElementById('project-modal').classList.remove('active');
-            loadProjects();
-        } else {
+        if (!response.ok) {
             alert(data.error || 'Failed to leave project');
+            return;
         }
+
+        document.getElementById('project-modal').classList.remove('active');
+        await loadProjects();
+        await loadMyProjects();
     } catch (error) {
         console.error('Error leaving project:', error);
-        alert('An error occurred');
+        alert('An error occurred while leaving the project.');
     }
 }
 
@@ -911,148 +1366,42 @@ async function loadMessages(projectId) {
         const response = await fetch(`${API_URL}/projects/${projectId}/messages`, {
             credentials: 'include'
         });
-        
+
+        if (!response.ok) {
+            const errorPayload = await response.json();
+            const container = document.getElementById('team-chat-messages');
+            if (container) {
+                container.innerHTML = `<div class="empty-state"><p>${escapeHtml(errorPayload.error || 'Error loading messages')}</p></div>`;
+            }
+            return;
+        }
+
         const messages = await response.json();
-        displayMessages(messages);
-    } catch (error) {
-        console.error('Error loading messages:', error);
-    }
-}
+        const container = document.getElementById('team-chat-messages');
+        if (!container) return;
 
-function displayMessages(messages) {
-    const container = document.getElementById('messages-list');
-    
-    if (messages.length === 0) {
-        container.innerHTML = '<div class="empty-state"><h3>No messages yet</h3><p>Start the conversation!</p></div>';
-        return;
-    }
-    
-    container.innerHTML = messages.map(msg => `
-        <div class="message">
-            <div class="message-header">
-                <span class="message-sender">${msg.sender.name}</span>
-                <span class="message-time">${new Date(msg.created_at).toLocaleString()}</span>
+        if (!messages || messages.length === 0) {
+            container.innerHTML = '<div class="empty-state"><p>No project messages yet</p></div>';
+            return;
+        }
+
+        container.innerHTML = messages.map(msg => `
+            <div class="message">
+                <div class="message-header">
+                    <span class="message-sender">${escapeHtml(msg.sender.name)}</span>
+                    <span class="message-time">${formatChatTimestamp(msg.created_at)}</span>
+                </div>
+                <div class="message-content">${escapeHtml(msg.content)}</div>
             </div>
-            <div class="message-content">${msg.content}</div>
-        </div>
-    `).join('');
-    
-    // Scroll to bottom
-    container.scrollTop = container.scrollHeight;
-}
+        `).join('');
 
-async function sendMessage(e) {
-    e.preventDefault();
-    
-    const content = document.getElementById('message-input').value;
-    
-    if (!content.trim()) return;
-    
-    try {
-        const response = await fetch(`${API_URL}/projects/${currentProject.id}/messages`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            credentials: 'include',
-            body: JSON.stringify({ content, message_type: 'group' })
-        });
-        
-        if (response.ok) {
-            document.getElementById('message-input').value = '';
-            loadMessages(currentProject.id);
-        } else {
-            alert('Failed to send message');
-        }
+        container.scrollTop = container.scrollHeight;
     } catch (error) {
-        console.error('Error sending message:', error);
-        alert('An error occurred');
-    }
-}
-
-// Class Chat (Student <-> Faculty)
-async function initializeClassChat() {
-    classChatRetryCount = 0;
-    await loadClassChatContacts();
-    connectClassChatSocket();
-}
-
-function connectClassChatSocket() {
-    if (classSocket || typeof io === 'undefined') {
-        return;
-    }
-
-    classSocket = io('http://localhost:5001', {
-        withCredentials: true,
-        transports: ['polling']
-    });
-
-    classSocket.on('class_message_received', (message) => {
-        const isCurrentConversation = activeClassChatRecipientId && (
-            message.sender_id === activeClassChatRecipientId ||
-            message.recipient_id === activeClassChatRecipientId
-        );
-
-        if (isCurrentConversation) {
-            appendClassChatMessage(message);
+        console.error('Error loading project messages:', error);
+        const container = document.getElementById('team-chat-messages');
+        if (container) {
+            container.innerHTML = '<p>Error loading messages</p>';
         }
-    });
-
-    classSocket.on('class_message_error', (payload) => {
-        alert(payload.error || 'Failed to send message');
-    });
-}
-
-async function loadClassChatContacts() {
-    try {
-        const response = await fetch(`${API_URL}/class-messages/contacts`, {
-            credentials: 'include'
-        });
-
-        if (!response.ok) {
-            await loadClassChatContactsFallback();
-            return;
-        }
-
-        classChatContacts = await response.json();
-
-        if (classChatContacts.length === 0) {
-            await loadClassChatContactsFallback();
-            return;
-        }
-
-        renderClassChatContacts(classChatContacts);
-    } catch (error) {
-        console.error('Error loading chat contacts:', error);
-        await loadClassChatContactsFallback();
-    }
-}
-
-async function loadClassChatContactsFallback() {
-    try {
-        const endpoint = currentUser && currentUser.role === 'student' ? `${API_URL}/faculty` : `${API_URL}/students`;
-        const response = await fetch(endpoint, {
-            credentials: 'include'
-        });
-
-        if (!response.ok) {
-            renderClassChatContacts([]);
-            return;
-        }
-
-        const users = await response.json();
-        classChatContacts = users.map(user => ({
-            id: user.id,
-            name: user.name || `${user.first_name} ${user.last_name}`,
-            role: currentUser && currentUser.role === 'student' ? 'faculty' : 'student',
-            title: user.title,
-            email: user.email
-        }));
-
-        renderClassChatContacts(classChatContacts);
-    } catch (error) {
-        console.error('Error loading fallback chat contacts:', error);
-        renderClassChatContacts([]);
     }
 }
 
@@ -1084,13 +1433,195 @@ function renderClassChatContacts(contacts) {
     input.disabled = false;
     select.innerHTML = contacts.map(contact => {
         const roleLabel = contact.role === 'faculty' ? 'Faculty' : 'Student';
-        return `<option value="${contact.id}">${escapeHtml(contact.name)} (${roleLabel})</option>`;
+        const classLabel = contact.crn_code ? ` - ${escapeHtml(contact.crn_code)}` : '';
+        return `<option value="${contact.id}">${escapeHtml(contact.name)}${classLabel} (${roleLabel})</option>`;
     }).join('');
 
     const selectedId = parseInt(select.value) || contacts[0].id;
     select.value = String(selectedId);
     activeClassChatRecipientId = selectedId;
     loadClassChatHistory(selectedId);
+}
+
+function renderStudentChatContactDropdown(contacts) {
+    // Show student view, hide faculty view
+    const studentDropdownDiv = document.getElementById('student-chat-dropdown');
+    const facultyDropdownsDiv = document.getElementById('faculty-chat-dropdowns');
+    if (studentDropdownDiv) studentDropdownDiv.style.display = 'block';
+    if (facultyDropdownsDiv) facultyDropdownsDiv.style.display = 'none';
+    
+    // Render the single dropdown for students
+    renderClassChatContacts(contacts);
+}
+
+function renderClassChatDualDropdownsForFaculty(classes, students) {
+    // Show faculty view, hide student view
+    const studentDropdownDiv = document.getElementById('student-chat-dropdown');
+    const facultyDropdownsDiv = document.getElementById('faculty-chat-dropdowns');
+    if (studentDropdownDiv) studentDropdownDiv.style.display = 'none';
+    if (facultyDropdownsDiv) facultyDropdownsDiv.style.display = 'block';
+    
+    // Render class dropdown
+    const classSelect = document.getElementById('class-chat-class');
+    const studentSelect = document.getElementById('class-chat-student');
+    const input = document.getElementById('class-chat-input');
+    
+    if (!classSelect || !studentSelect || !input) return;
+    
+    // Populate class dropdown
+    classSelect.innerHTML = '<option value="">Select a class...</option>' + 
+        classes.map(cls => 
+            `<option value="${cls.crn_code}">${cls.crn_code} - ${escapeHtml(cls.course_name)} (${cls.student_count} students)</option>`
+        ).join('');
+    
+    classSelect.disabled = false;
+    studentSelect.disabled = true;
+    input.disabled = true;
+    
+    // Store students data grouped by class for quick access
+    window.facultyStudentsByClass = {};
+    students.forEach(student => {
+        const crn = student.crn_code;
+        if (!window.facultyStudentsByClass[crn]) {
+            window.facultyStudentsByClass[crn] = [];
+        }
+        window.facultyStudentsByClass[crn].push(student);
+    });
+    
+    // Set up class dropdown change listener
+    classSelect.removeEventListener('change', handleClassDropdownChange);
+    classSelect.addEventListener('change', handleClassDropdownChange);
+    
+    // Set up student dropdown change listener
+    studentSelect.removeEventListener('change', handleStudentDropdownChange);
+    studentSelect.addEventListener('change', handleStudentDropdownChange);
+    
+    renderClassChatMessages([]);
+}
+
+function handleClassDropdownChange(event) {
+    const selectedCrn = event.target.value;
+    const studentSelect = document.getElementById('class-chat-student');
+    const input = document.getElementById('class-chat-input');
+    
+    if (!selectedCrn) {
+        studentSelect.innerHTML = '<option value="">Select a student...</option>';
+        studentSelect.disabled = true;
+        input.disabled = true;
+        renderClassChatMessages([]);
+        activeClassChatRecipientId = null;
+        return;
+    }
+    
+    // Get students for this class
+    const studentsInClass = window.facultyStudentsByClass[selectedCrn] || [];
+    
+    if (studentsInClass.length === 0) {
+        studentSelect.innerHTML = '<option value="">No students in this class</option>';
+        studentSelect.disabled = true;
+        input.disabled = true;
+        renderClassChatMessages([]);
+        activeClassChatRecipientId = null;
+        return;
+    }
+    
+    // Populate student dropdown
+    studentSelect.innerHTML = '<option value="">Select a student...</option>' +
+        studentsInClass.map(student =>
+            `<option value="${student.id}">${escapeHtml(student.name)}</option>`
+        ).join('');
+    
+    studentSelect.disabled = false;
+    renderClassChatMessages([]);
+    activeClassChatRecipientId = null;
+}
+
+function handleStudentDropdownChange(event) {
+    const selectedStudentId = parseInt(event.target.value);
+    const input = document.getElementById('class-chat-input');
+    
+    if (!selectedStudentId) {
+        input.disabled = true;
+        renderClassChatMessages([]);
+        activeClassChatRecipientId = null;
+        return;
+    }
+    
+    activeClassChatRecipientId = selectedStudentId;
+    input.disabled = false;
+    loadClassChatHistory(selectedStudentId);
+}
+
+function renderEmptyClassChatUI(message) {
+    const studentDropdownDiv = document.getElementById('student-chat-dropdown');
+    const facultyDropdownsDiv = document.getElementById('faculty-chat-dropdowns');
+    const input = document.getElementById('class-chat-input');
+    
+    if (currentUser && currentUser.role === 'faculty') {
+        if (facultyDropdownsDiv) facultyDropdownsDiv.style.display = 'block';
+        if (studentDropdownDiv) studentDropdownDiv.style.display = 'none';
+        const classSelect = document.getElementById('class-chat-class');
+        if (classSelect) classSelect.innerHTML = `<option value="">${message}</option>`;
+    } else {
+        if (studentDropdownDiv) studentDropdownDiv.style.display = 'block';
+        if (facultyDropdownsDiv) facultyDropdownsDiv.style.display = 'none';
+        const select = document.getElementById('class-chat-recipient');
+        if (select) select.innerHTML = `<option value="">${message}</option>`;
+    }
+    
+    if (input) input.disabled = true;
+    renderClassChatMessages([]);
+}
+
+async function initializeClassChat() {
+    classChatRetryCount = 0;
+    activeClassChatRecipientId = null;
+    await loadClassChatContacts();
+}
+
+async function loadClassChatContacts() {
+    try {
+        if (currentUser && currentUser.role === 'faculty') {
+            const classesResponse = await fetch(`${API_URL}/my-classes`, {
+                credentials: 'include'
+            });
+
+            const studentsResponse = await fetch(`${API_URL}/students`, {
+                credentials: 'include'
+            });
+
+            if (!classesResponse.ok || !studentsResponse.ok) {
+                renderEmptyClassChatUI('No class contacts available');
+                return;
+            }
+
+            const classes = await classesResponse.json();
+            const students = await studentsResponse.json();
+
+            if (!classes.length) {
+                renderEmptyClassChatUI('No classes available');
+                return;
+            }
+
+            renderClassChatDualDropdownsForFaculty(classes, students);
+            return;
+        }
+
+        const response = await fetch(`${API_URL}/class-messages/contacts`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            renderEmptyClassChatUI('No contacts available');
+            return;
+        }
+
+        const contacts = await response.json();
+        renderStudentChatContactDropdown(contacts);
+    } catch (error) {
+        console.error('Error loading class chat contacts:', error);
+        renderEmptyClassChatUI('No contacts available');
+    }
 }
 
 async function loadClassChatHistory(recipientId) {
@@ -1127,7 +1658,7 @@ function renderClassChatMessages(messages) {
             <div class="message ${isOwn ? 'message-own' : ''}">
                 <div class="message-header">
                     <span class="message-sender">${escapeHtml(message.sender_name)}</span>
-                    <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+                    <span class="message-time">${formatChatTimestamp(message.created_at)}</span>
                 </div>
                 <div class="message-content">${escapeHtml(message.content)}</div>
             </div>
@@ -1152,7 +1683,7 @@ function appendClassChatMessage(message) {
     node.innerHTML = `
         <div class="message-header">
             <span class="message-sender">${escapeHtml(message.sender_name)}</span>
-            <span class="message-time">${new Date(message.created_at).toLocaleString()}</span>
+            <span class="message-time">${formatChatTimestamp(message.created_at)}</span>
         </div>
         <div class="message-content">${escapeHtml(message.content)}</div>
     `;
@@ -1201,6 +1732,156 @@ async function sendClassChatMessage(e) {
     }
 }
 
+// Team Messaging
+let activeTeamMessageRecipientId = null;
+
+async function loadTeamMessagingContacts() {
+    if (!currentProject) return;
+
+    const contactsList = document.getElementById('team-contacts-list');
+    if (!contactsList) return;
+
+    contactsList.innerHTML = '';
+    activeTeamMessageRecipientId = null;
+    document.getElementById('selected-contact-name').textContent = '';
+    document.getElementById('team-chat-messages').innerHTML = '';
+    const teamChatInput = document.getElementById('team-chat-input');
+    if (teamChatInput) {
+        teamChatInput.style.display = 'none';
+    }
+
+    const teamMembers = currentProject.team_members || [];
+    const contacts = teamMembers
+        .filter(member => member.id !== currentUser.id)
+        .map(member => ({
+            id: member.id,
+            name: member.name,
+            role: 'Team Member'
+        }));
+
+    if (currentProject.creator && currentProject.creator.id !== currentUser.id) {
+        contacts.push({
+            id: currentProject.creator.id,
+            name: currentProject.creator.name,
+            role: currentProject.creator.title || 'Professor'
+        });
+    }
+
+    if (contacts.length === 0) {
+        contactsList.innerHTML = '<p>No team members or professor to message.</p>';
+        return;
+    }
+
+    for (const contact of contacts) {
+        const button = document.createElement('button');
+        button.className = 'team-contact-btn';
+        button.type = 'button';
+        button.dataset.contactId = String(contact.id);
+        button.dataset.contactName = contact.name;
+        button.innerHTML = `<strong>${contact.name}</strong><br><small>${contact.role}</small>`;
+        button.addEventListener('click', () => selectTeamContact(contact.id, contact.name, button));
+        contactsList.appendChild(button);
+    }
+}
+
+async function selectTeamContact(contactId, contactName, selectedButton = null) {
+    activeTeamMessageRecipientId = contactId;
+
+    document.getElementById('selected-contact-name').textContent = `Chat with ${contactName}`;
+    const teamChatInput = document.getElementById('team-chat-input');
+    if (teamChatInput) {
+        teamChatInput.style.display = 'block';
+    }
+
+    document.querySelectorAll('.team-contact-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    if (selectedButton) {
+        selectedButton.classList.add('active');
+    }
+
+    await loadTeamMessageHistory(contactId);
+}
+
+async function loadTeamMessageHistory(contactId) {
+    const messagesDiv = document.getElementById('team-chat-messages');
+    if (!messagesDiv) return;
+
+    try {
+        const response = await fetch(`${API_URL}/class-messages/${contactId}`, {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            messagesDiv.innerHTML = '<p>Error loading messages</p>';
+            return;
+        }
+
+        const messages = await response.json();
+
+        if (!Array.isArray(messages) || messages.length === 0) {
+            messagesDiv.innerHTML = '<p><em>No messages yet</em></p>';
+            return;
+        }
+
+        const messagesHtml = messages.map(msg => `
+            <div class="message ${msg.sender_id === currentUser.id ? 'sent' : 'received'}">
+                <strong>${msg.sender_id === currentUser.id ? 'You' : msg.sender_name}</strong><br/>
+                <span>${msg.content}</span>
+                <small>${new Date(msg.created_at).toLocaleString()}</small>
+            </div>
+        `).join('');
+
+        messagesDiv.innerHTML = messagesHtml;
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } catch (error) {
+        console.error('Error loading team message history:', error);
+        messagesDiv.innerHTML = '<p>Error loading messages</p>';
+    }
+}
+
+async function sendTeamMessage(e) {
+    e.preventDefault();
+
+    if (!currentProject) {
+        alert('Please open a project first');
+        return;
+    }
+
+    const input = document.getElementById('team-chat-input');
+    if (!input) return;
+
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+        const response = await fetch(`${API_URL}/projects/${currentProject.id}/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                content,
+                message_type: 'group'
+            })
+        });
+
+        if (!response.ok) {
+            const errorPayload = await response.json();
+            alert(errorPayload.error || 'Failed to send message');
+            return;
+        }
+
+        input.value = '';
+        await loadMessages(currentProject.id);
+    } catch (error) {
+        console.error('Error sending team message:', error);
+        alert('An error occurred while sending your message.');
+    }
+}
+
+// Tasks
 // Tasks
 async function loadTasks(projectId) {
     try {
@@ -1294,10 +1975,34 @@ async function showCreateProject() {
             if (response.ok) {
                 const classes = await response.json();
                 const select = document.getElementById('new-project-class');
+                const visibilityContainer = document.getElementById('new-project-visible-classes');
                 select.innerHTML = '<option value="">Select a class</option>';
-                classes.forEach(cls => {
-                    select.innerHTML += `<option value="${cls.crn_code}">${cls.crn_code} - ${cls.course_name}</option>`;
-                });
+
+                if (!classes.length) {
+                    if (visibilityContainer) {
+                        visibilityContainer.innerHTML = '<p class="class-no-projects">Create at least one class before creating projects.</p>';
+                    }
+                } else {
+                    select.innerHTML += classes.map(cls =>
+                        `<option value="${cls.crn_code}">${cls.crn_code} - ${escapeHtml(cls.course_name)}</option>`
+                    ).join('');
+
+                    if (visibilityContainer) {
+                        visibilityContainer.innerHTML = classes.map(cls => `
+                            <label class="project-visibility-option">
+                                <input type="checkbox" name="project-visible-crn" value="${cls.crn_code}">
+                                <span>${escapeHtml(cls.crn_code)} - ${escapeHtml(cls.course_name)}</span>
+                            </label>
+                        `).join('');
+                    }
+                }
+
+                select.onchange = () => {
+                    const selectedCrn = select.value;
+                    if (!selectedCrn) return;
+                    const checkbox = document.querySelector(`input[name="project-visible-crn"][value="${selectedCrn}"]`);
+                    if (checkbox) checkbox.checked = true;
+                };
             }
         } catch (error) {
             console.error('Error loading classes:', error);
@@ -1321,6 +2026,15 @@ async function handleCreateProject(e) {
     if (classSelect && classSelect.value) {
         projectData.crn_code = classSelect.value;
     }
+
+    const selectedVisibleCrns = Array.from(document.querySelectorAll('input[name="project-visible-crn"]:checked'))
+        .map(input => input.value)
+        .filter(Boolean);
+
+    if (projectData.crn_code && !selectedVisibleCrns.includes(projectData.crn_code)) {
+        selectedVisibleCrns.push(projectData.crn_code);
+    }
+    projectData.visible_crn_codes = selectedVisibleCrns;
     
     try {
         const response = await fetch(`${API_URL}/projects`, {
@@ -1915,6 +2629,10 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function isValidCRN(crn) {
+    return /^\d{5}$/.test((crn || '').trim());
+}
+
 // ==========================================
 // CLASS MANAGEMENT FUNCTIONS
 // ==========================================
@@ -1977,6 +2695,11 @@ document.getElementById('create-class-form').addEventListener('submit', async (e
         return;
     }
 
+    if (!isValidCRN(crn)) {
+        showCreateClassError('CRN must be exactly 5 digits.');
+        return;
+    }
+
     const classData = {
         crn_code:    crn,
         course_name: name,
@@ -2025,10 +2748,25 @@ document.getElementById('create-class-form').addEventListener('submit', async (e
 
 async function loadClassInfo() {
     try {
+        if (currentUser && currentUser.role === 'faculty') {
+            const response = await fetch(`${API_URL}/my-classes`, {
+                credentials: 'include'
+            });
+
+            if (response.ok) {
+                const classes = await response.json();
+                displayFacultyClassInfo(classes);
+            } else {
+                document.getElementById('class-info-content').innerHTML =
+                    '<p>No classes found for this faculty account yet.</p>';
+            }
+            return;
+        }
+
         const response = await fetch(`${API_URL}/class-info`, {
             credentials: 'include'
         });
-        
+
         if (response.ok) {
             const classInfo = await response.json();
             displayClassInfo(classInfo);
@@ -2036,8 +2774,7 @@ async function loadClassInfo() {
             const joinCard = document.getElementById('join-class-card');
             if (joinCard) joinCard.style.display = 'none';
         } else {
-            document.getElementById('class-info-content').innerHTML = 
-                '<p>No class information available</p>';
+            document.getElementById('class-info-content').innerHTML = '<p>No class information available</p>';
             // Show join card only for students without a class
             if (currentUser && currentUser.role === 'student') {
                 const joinCard = document.getElementById('join-class-card');
@@ -2058,6 +2795,11 @@ async function joinClass() {
 
     if (!crn_code) {
         showJoinFeedback('Please enter a CRN code.', 'error');
+        return;
+    }
+
+    if (!isValidCRN(crn_code)) {
+        showJoinFeedback('CRN must be exactly 5 digits.', 'error');
         return;
     }
 
@@ -2137,6 +2879,46 @@ function displayClassInfo(classInfo) {
     `;
 }
 
+function displayFacultyClassInfo(classes) {
+    const container = document.getElementById('class-info-content');
+
+    if (!classes || classes.length === 0) {
+        container.innerHTML = '<p>No classes found for this faculty account yet.</p>';
+        return;
+    }
+
+    container.innerHTML = `
+        <div class="class-info-grid">
+            <div class="class-info-item">
+                <label>Classes Taught:</label>
+                <span>${classes.length}</span>
+            </div>
+            <div class="class-info-item">
+                <label>Total Students:</label>
+                <span>${classes.reduce((sum, cls) => sum + (cls.student_count || 0), 0)}</span>
+            </div>
+            <div class="class-info-item">
+                <label>Total Projects:</label>
+                <span>${classes.reduce((sum, cls) => sum + (cls.project_count || 0), 0)}</span>
+            </div>
+        </div>
+        <div class="faculty-class-summary-list">
+            ${classes.map(cls => `
+                <div class="faculty-class-summary-card">
+                    <div class="faculty-class-summary-header">
+                        <strong>${escapeHtml(cls.crn_code)}</strong>
+                        <span>${escapeHtml(cls.course_name)}</span>
+                    </div>
+                    <div class="faculty-class-summary-meta">
+                        <span>${cls.student_count} students</span>
+                        <span>${cls.project_count} projects</span>
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
 async function loadFaculty() {
     try {
         const response = await fetch(`${API_URL}/faculty`, {
@@ -2162,6 +2944,7 @@ function displayFaculty(facultyList) {
     
     grid.innerHTML = facultyList.map(faculty => {
         const showMsg = currentUser && faculty.id !== currentUser.id;
+        const classBadge = faculty.crn_code ? `<span class="tag">CRN ${escapeHtml(faculty.crn_code)}</span>` : '';
         return `
         <div class="faculty-card">
             <div class="student-card-header">
@@ -2171,6 +2954,7 @@ function displayFaculty(facultyList) {
             <p class="faculty-email">${faculty.email}</p>
             <div class="faculty-meta">
                 <span>Faculty Member</span>
+                ${classBadge}
             </div>
         </div>
     `}).join('');
@@ -2192,6 +2976,54 @@ loadDashboard = async function() {
 
 let cpFeedbackAction = null;   // 'approve' | 'deny'
 let cpFeedbackProposalId = null;
+let customProjectsListenersBound = false;
+
+function setupCustomProjectsEventListeners() {
+    if (customProjectsListenersBound) return;
+
+    const pendingList = document.getElementById('faculty-cp-pending-list');
+    if (pendingList) {
+        pendingList.addEventListener('click', (e) => {
+            const actionBtn = e.target.closest('button[data-cp-action][data-cp-proposal-id]');
+            if (!actionBtn) return;
+
+            const proposalId = parseInt(actionBtn.getAttribute('data-cp-proposal-id'), 10);
+            const action = actionBtn.getAttribute('data-cp-action');
+            if (!proposalId || (action !== 'approve' && action !== 'deny')) return;
+
+            const confirmed = window.confirm(
+                action === 'approve'
+                    ? 'Approve this proposal and create a live project?'
+                    : 'Deny this proposal?'
+            );
+            if (!confirmed) return;
+
+            actionBtn.disabled = true;
+            reviewCustomProjectProposal(proposalId, action)
+                .finally(() => {
+                    actionBtn.disabled = false;
+                });
+        });
+    }
+
+    const feedbackCloseBtn = document.getElementById('cp-feedback-close');
+    if (feedbackCloseBtn) {
+        feedbackCloseBtn.addEventListener('click', closeCPFeedbackModal);
+    }
+
+    customProjectsListenersBound = true;
+}
+
+function handleFacultyProposalAction(proposalId, action) {
+    const confirmed = window.confirm(
+        action === 'approve'
+            ? 'Approve this proposal and create a live project?'
+            : 'Deny this proposal?'
+    );
+    if (!confirmed) return;
+
+    reviewCustomProjectProposal(proposalId, action);
+}
 
 // ---- Open/close the main Custom Projects modal ----
 
@@ -2421,8 +3253,8 @@ function renderFacultyProposals(container, proposals, showActions) {
                 ` : ''}
                 ${showActions ? `
                     <div class="cp-review-actions">
-                        <button class="btn btn-primary btn-sm" onclick="openCPFeedbackModal(${p.id}, 'approve')">✔ Approve</button>
-                        <button class="btn btn-danger btn-sm"  onclick="openCPFeedbackModal(${p.id}, 'deny')">✘ Deny</button>
+                        <button type="button" class="btn btn-primary btn-sm" data-cp-action="approve" data-cp-proposal-id="${p.id}" onclick="handleFacultyProposalAction(${p.id}, 'approve')">Approve</button>
+                        <button type="button" class="btn btn-danger btn-sm" data-cp-action="deny" data-cp-proposal-id="${p.id}" onclick="handleFacultyProposalAction(${p.id}, 'deny')">Deny</button>
                     </div>
                 ` : ''}
                 ${p.approval_status === 'approved' && p.approved_project_id ? `
@@ -2476,28 +3308,8 @@ function openCPFeedbackModal(proposalId, action) {
         btn.textContent = 'Processing…';
 
         try {
-            const response = await fetch(`${API_URL}/custom-projects/${cpFeedbackProposalId}/review`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({ action: cpFeedbackAction, feedback })
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                alert(result.message);
-                closeCPFeedbackModal();
-                loadFacultyProposals();
-                if (cpFeedbackAction === 'approve') {
-                    loadProjects();
-                }
-            } else {
-                const err = await response.json();
-                alert('Error: ' + (err.error || 'Unknown error'));
-            }
-        } catch (error) {
-            console.error('Error reviewing proposal:', error);
-            alert('A network error occurred.');
+            await reviewCustomProjectProposal(cpFeedbackProposalId, cpFeedbackAction, feedback);
+            closeCPFeedbackModal();
         } finally {
             btn.disabled = false;
             btn.textContent = cpFeedbackAction === 'approve' ? 'Approve Project' : 'Deny Proposal';
@@ -2511,4 +3323,37 @@ function closeCPFeedbackModal() {
     document.getElementById('cp-feedback-modal').classList.remove('active');
     cpFeedbackAction = null;
     cpFeedbackProposalId = null;
+}
+
+async function reviewCustomProjectProposal(proposalId, action, feedback = '') {
+    try {
+        const response = await fetch(`${API_URL}/custom-projects/${proposalId}/review`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ action, feedback })
+        });
+
+        let payload = {};
+        try {
+            payload = await response.json();
+        } catch (_) {
+            payload = {};
+        }
+
+        if (!response.ok) {
+            const msg = payload.error || 'Unknown error';
+            alert(`Review failed (${response.status}): ${msg}`);
+            return;
+        }
+
+        alert(payload.message || 'Review submitted.');
+        loadFacultyProposals();
+        if (action === 'approve') {
+            loadProjects();
+        }
+    } catch (error) {
+        console.error('Error reviewing proposal:', error);
+        alert('A network error occurred while reviewing the proposal.');
+    }
 }
