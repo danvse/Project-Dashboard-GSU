@@ -274,6 +274,7 @@ async function handleLogout() {
         stopClassChatAutoRefresh();
         clearCachedUser();
         localStorage.removeItem('currentView');
+        history.replaceState(null, '', window.location.pathname);  // clear the hash
         showPage('login-page');
     } catch (error) {
         console.error('Logout error:', error);
@@ -513,9 +514,8 @@ function showDashboard() {
     startClassChatAutoRefresh();
     setupChatFocusRefreshTriggers();
     
-    // Restore last viewed tab, or default to overview
-    const savedView = localStorage.getItem('currentView') || 'overview';
-    showView(savedView);
+    // Restore view from URL hash, or localStorage, or default to overview
+    _restoreFromHash();
 }
 
 function updateRoleVisibility() {
@@ -550,7 +550,8 @@ function updateRoleVisibility() {
 }
 
 // Views
-function showView(viewName) {
+// Internal view switcher — does NOT touch the hash (prevents infinite loops)
+function _activateView(viewName) {
     document.querySelectorAll('.dashboard-view').forEach(view => {
         view.classList.remove('active');
     });
@@ -588,6 +589,41 @@ function showView(viewName) {
         loadClassInfo();
         loadClassChatContacts();
         refreshVisibleChatsNow();
+    }
+}
+
+// Public view switcher — pushes a new hash entry so back/forward works
+function showView(viewName) {
+    const newHash = '#' + viewName;
+    if (window.location.hash !== newHash) {
+        window.location.hash = newHash;  // triggers hashchange → _onHashChange
+    } else {
+        _activateView(viewName);  // same hash, just refresh the view
+    }
+}
+
+// Listen for back/forward button presses
+window.addEventListener('hashchange', _onHashChange);
+
+function _onHashChange() {
+    if (!currentUser) return;  // not logged in, ignore hash changes
+    const hash = window.location.hash.replace('#', '');
+    if (!hash) {
+        _activateView('overview');
+        return;
+    }
+    _activateView(hash);
+}
+
+// Read the current hash on app entry (so refreshing stays on the right view)
+function _restoreFromHash() {
+    const hash = window.location.hash.replace('#', '');
+    if (hash) {
+        _onHashChange();
+    } else {
+        // Fall back to localStorage saved view, or default to overview
+        const savedView = localStorage.getItem('currentView') || 'overview';
+        _activateView(savedView);
     }
 }
 
